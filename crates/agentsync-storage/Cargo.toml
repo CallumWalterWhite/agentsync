@@ -1,0 +1,20 @@
+[package]
+name = "agentsync-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agentsync-core.workspace = true
+agentsync-provider-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+libc.workspace = true
+rusqlite = { version = "0.38", features = ["bundled"] }
+

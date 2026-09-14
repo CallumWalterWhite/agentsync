@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-13T21:52:44.263Z","type":"session_meta","ordinal":0,"payload":{"id":"01a09cc2-24e6-75b1-a1dd-a0a759a7d3d4","cwd":"/work/polaris","timestamp":"2026-09-13T21:52:44.263Z","cli_version":"0.154.0","source":{"subagent":{"thread_spawn":{"depth":1}}},"base_instructions":"Synthetic fixture only"}}
+{"timestamp":"2026-09-13T21:53:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic harmless fixture"}]}}
