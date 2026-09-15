@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+tar = "0.4"
 agentsync-core.workspace = true
 agentsync-provider-api.workspace = true
 serde.workspace = true

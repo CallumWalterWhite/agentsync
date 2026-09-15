@@ -1,24 +1,35 @@
 # AgentSync status and remaining work
 
-Last updated: 2026-09-14.
+Last updated: 2026-09-15.
 
 ## Where we are
 
-The Phase 0/1 local foundation is implemented and tested on macOS. AgentSync can discover supported Claude Code and Codex sessions, associate them with projects, persist metadata, and capture verified immutable local snapshots. It cannot yet move a session to another machine or restore it into a provider.
+The Phase 0/1 foundation, verified local exchange and Phase 2 encrypted relay basics are implemented. Manual push/pull transfers snapshots through a private hosted relay. Native session restore/resume and automatic synchronization remain unimplemented.
 
-The current milestone is ready for review, with the compatibility and verification limits below. The next recommended milestone is to strengthen the local foundation before attempting session restoration or synchronization.
+The exchange boundary is deliberate: transfer a verified copy into AgentSync storage, preserve the source identities, and keep provider files read-only. Import does not create a local Claude/Codex session or enable native resume. Phase 2 adds encrypted HTTPS transport while preserving this boundary. Accounts, restore and daemons remain future work.
 
-## Completed
+## Completed foundation
 
 - [x] Rust workspace with neutral core types, a provider API, separate Claude/Codex adapters, SQLite storage, and a CLI.
-- [x] Read-only provider discovery with synthetic fixtures, absence handling, malformed-input isolation, and compatibility documentation.
-- [x] Stable AgentSync device/session identities, normalized Git remote identity, and local project mappings.
-- [x] Numbered SQLite migration, idempotent discovery, and persisted diagnostics.
-- [x] Immutable snapshot versions, SHA-256 object/manifest hashes, exclusive publication, integrity verification, and source-change rejection.
-- [x] CLI commands for initialization, provider health, discovery, projects, sessions, snapshot capture, and verification; human and JSON output.
-- [x] Regression coverage for Git filter execution, sensitive metadata rejection, and failing `doctor` status on snapshot corruption.
-- [x] README, architecture/domain/provider documentation, and five architecture decision records.
-- [x] 49 passing tests, including CLI workflows and snapshot safety boundaries.
+- [x] Read-only discovery with synthetic fixtures, absence handling, malformed-input isolation, and compatibility documentation.
+- [x] Stable device/session identities, normalized Git remote identity, and local project mappings.
+- [x] Numbered migration, idempotent discovery, persisted diagnostics, and immutable verified snapshot versions.
+- [x] CLI workflows and safety regressions for Git filter execution, sensitive metadata, snapshot corruption, and source preservation.
+- [x] Architecture/domain/provider documentation and ADRs 0001–0005.
+- [x] Foundation test suite passed on macOS with Rust 1.98.1 and the declared Rust 1.85 minimum.
+
+## Completed milestone: verified local exchange
+
+Implementation, focused review, and final macOS acceptance checks are complete. The suite contains 89 passing tests on Rust 1.98.1 and Rust 1.85.0.
+
+- [x] Export a registered local or imported snapshot into a new directory outside current AgentSync/provider roots.
+- [x] Import against an independently trusted manifest SHA-256, with all native bytes validated before private publication.
+- [x] Preserve original format-1 manifest bytes and foreign identities in a separate import catalog, with no local provider session creation.
+- [x] Provide format-1 exchange receipts, imported-bundle listing/verification, and doctor checks for corruption/orphans.
+- [x] Reject conflicts, unsafe paths, extra entries, recognized sensitive content, unstable sources, and corrupt existing destinations; make identical reimport idempotent.
+- [x] Prove additive schema-2 migration preserves existing local metadata/snapshots and document backup-based rollback.
+- [x] Document exchange commands, manual transfer, trust limitations, and [ADR 0006](docs/ADR/0006-verified-snapshot-exchange.md).
+- [x] Complete formatting, strict workspace Clippy, workspace tests, and minimum-toolchain validation for the final exchange code.
 
 ## Current limits
 
@@ -26,34 +37,48 @@ The current milestone is ready for review, with the compatibility and verificati
 | --- | --- |
 | Native bundles | Only primary transcripts are captured. Ancillary files and provider indexes/databases are excluded. Resume compatibility is unverified. |
 | Provider versions | Claude capture: 2.1.234–2.1.269. Codex capture: 0.153.2 and 0.154.0. Unknown versions cannot be snapshotted. |
-| Privacy | Recognized sensitive content is rejected. Arbitrary unknown secrets cannot be ruled out; snapshots are private local data, not encrypted exports. |
+| Exchange trust | Local exchange pins the manifest hash. Relay exchange pins the full ciphertext hash and encrypts the entire bundle with age; no device signatures or pairing exist. |
+| Privacy | Recognized sensitive native content and unsafe decoded metadata are rejected. Arbitrary unknown secrets cannot be ruled out. |
+| Destination behavior | Imports remain foreign snapshots in AgentSync. No provider writes, project mapping, native restore, or automatic transfer occurs. |
 | Git state | Repository identity, branch, and HEAD are available. Dirty state is unknown because ordinary status can execute configured filters. |
-| Platforms | macOS has been tested. Linux publication is implemented but unverified here. Windows safety support is not implemented. |
-| Toolchain | Validation used Rust 1.98.1. The declared Rust 1.85 minimum has not been tested. |
-| Interrupted capture | Orphan snapshots and staging directories are reported and retained. No cleanup/recovery policy is implemented. |
-| Repository setup | This workspace has no `.git` metadata. No Git diff, commit, remote, or release was produced. |
+| Platforms | The macOS suite passes. The deployed Linux ARM64 Docker showcase exercises capture, relay transfer and immutable import. The complete Linux suite and Windows safety support remain pending. |
+| Toolchain | Rust 1.85.0 and 1.98.1 both pass the complete 89-test suite on macOS ARM64. |
+| Interrupted publication | Orphan snapshots/imports and staging directories are reported and retained. No cleanup/recovery policy is implemented. |
+| Upgrade/rollback | Schema 2 is additive; older binaries reject it. Rollback requires a consistent pre-upgrade backup of AgentSync-owned storage. |
+| Repository setup | Git metadata is now present. This compatibility update did not create commits, remotes, or releases. |
 
-## What remains next
+## Next work
 
-These are proposed follow-up tasks, not features already implemented or authorization to begin a new milestone.
+The 2026-09-15 compatibility update is complete: Codex accepts the observed, doubly declared initial child/parent metadata prefix and consistent primary repeats. Unrelated/conflicting IDs remain blocked. Discovery, `sessions show`, and snapshot refusal now provide specific safe reasons. Sensitive-content errors include a category and line number while preserving all existing blocking rules. See [Codex compatibility](docs/provider-codex.md) for the exact acceptance boundary.
 
-1. [ ] **Verify the supported build matrix.** Run the existing gates on Linux and Rust 1.85. Resolve failures or correct the documented support contract. Record reproducible results.
-2. [ ] **Exercise interrupted and concurrent capture.** Add fault-injection tests around source replacement, staging writes, publication, and SQLite registration. Prove failures cannot register partial snapshots or alter earlier versions.
-3. [ ] **Expand provider compatibility with evidence.** Add synthetic fixtures and documentation for additional observed versions before extending capture support. Preserve per-artifact failure isolation.
-4. [ ] **Define snapshot lifecycle and privacy policies.** Specify orphan handling, retention/deletion behavior, and stronger protection for native content. Keep any cleanup limited to AgentSync-owned storage.
-5. [ ] **Review remaining Git state needs.** Implement dirty detection only if it can avoid hooks, filters, helpers, and index writes; otherwise retain an explicit unknown value.
-6. [ ] **Prepare repository and release workflow.** Establish Git history and repeatable CI/release checks when that work is requested. Do not imply Linux or minimum-version support has passed before it has.
+The explicit forced-capture update adds `snapshot --force` for keyword-reference false positives. Credential-like markers remain blocked, including markers after an allowed keyword, and successful forced snapshots record the override. See [ADR 0007](docs/ADR/0007-limited-forced-snapshot.md).
 
-Start with item 1. It provides a concrete acceptance gate without expanding provider access or adding product infrastructure.
+1. Verify the final supported build matrix on Linux, including exclusive publication and directory syncing. Do not treat an unavailable local Linux runtime as a passing check.
+2. Expand interruption and concurrency fault injection around capture/export/import publication and database registration.
+3. Expand provider compatibility only with synthetic fixtures and recorded version/layout evidence.
+4. Define orphan handling, retention/deletion behavior, and stronger privacy protection for AgentSync-owned data.
+5. Establish complete resumable bundle dependencies and an explicit destination project-mapping design before proposing native restore.
 
-## Later product milestones
-
-The eventual goal is safe continuation of a native session on another machine. That still requires evidence of complete resumable bundles, a versioned restore design, project mapping on the destination, and safe provider compatibility checks.
-
-Provider writes or restore require a new ADR and an explicitly authorized milestone. Remote transfer, cloud synchronization, accounts, key exchange, background services, and a UI remain separate future scope. None are prerequisites for reviewing the current local foundation.
+Provider writes or restore require a new ADR and an explicitly authorized milestone. Beyond the implemented manual relay, accounts, device pairing, key recovery and background synchronization remain future scope.
 
 ## Verification and continuation
 
-The latest code verification passed on macOS: `cargo build --workspace`, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (49 tests). Tests use synthetic artifacts and temporary repositories, not installed provider data.
+Verified on 2026-09-15: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked`, and `cargo build --workspace --locked` pass with Rust 1.98.1 on macOS ARM64. `cargo +1.85.0 test --workspace --locked` also passes. Each test run contains 89 tests: twelve CLI workflows, three core tests, six shared provider tests, nine Claude tests, seventeen Codex tests, thirty-five storage tests, one crypto test, two HTTP client tests and four relay tests.
 
-Use this document for current progress and the remaining backlog. Read [HANDOFF.md](HANDOFF.md) for recovery context and local toolchain notes, [README.md](README.md) for usage, and [architecture.md](docs/architecture.md) for design boundaries. Update this status when a task is completed, with its verification evidence and any changed limitations.
+Exchange regressions cover a two-store round trip for both adapters, repeat imports, re-export, preserved source bytes and foreign identity, corrupted transfers/imports, conflicts between local and imported snapshot IDs, receipt changes before publication, unsafe metadata and paths, and schema-1-to-2 preservation. Linux and process-crash fault injection remain unverified; the passing macOS suite does not close those tasks.
+
+Cargo also emits a future-compatibility notice for the transitive `proc-macro-error2` 2.0.1 dependency. It does not fail either tested toolchain; revisit the dependency when upgrading toolchains.
+
+Tests use synthetic artifacts and temporary repositories, never installed provider data. Read [HANDOFF.md](HANDOFF.md) for continuation context, [README.md](README.md) for commands, and [architecture.md](docs/architecture.md) for design boundaries.
+
+## Phase 2: encrypted relay basics
+
+Implemented manual `push`/`pull`, age X25519 encryption, protocol v1 and an authenticated Axum relay backed by private disk storage. Relay storage is immutable and quota-bounded; clients pin ciphertext hashes and reuse strict bundle validation. Tests exercise two isolated stores over real loopback HTTP. See [setup](docs/machine-sync.md) and [ADR 0008](docs/ADR/0008-encrypted-relay-basics.md).
+
+Remaining: deployment validation on separate machines/HTTPS, account/device enrollment, key recovery and revocation, S3/PostgreSQL integration, change feeds, background synchronization, resumable uploads, deletion/retention and native restore. These are not required for manual encrypted snapshot transfer.
+
+## Deployed Docker showcase
+
+A local deployment is available through `deploy/compose.yaml` at http://localhost:8788. It runs the real relay and CLI with two isolated synthetic stores inside one Linux ARM64 container. The browser demonstrates encrypted transfers in either direction with real hashes, source preservation and repeat-import verification. No host provider data is mounted; all demo data and keys are disposable.
+
+Validation: Docker release build, healthy container, HTTP smoke test in both directions, four Python HTTP boundary tests, desktop/mobile browser button checks, and container restart/reset. Native `cargo fmt --check`, strict Clippy and all 89 workspace tests pass. This verifies the Linux showcase flow, not the complete Linux test matrix or operation on two physical hosts. Public hosting still requires a target host/domain. See [deployment guide](deploy/README.md).

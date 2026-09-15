@@ -1,0 +1,8 @@
+/target/
+/.agentsync/
+*.db
+*.db-shm
+*.db-wal
+
+.claude/
+.agents/

@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**/
+!crates/**/Cargo.toml
+!crates/**/*.rs
+!crates/**/*.sql
+!crates/**/tests/fixtures/
+!crates/**/tests/fixtures/**
+!deploy/
+!deploy/showcase/
+!deploy/showcase/*.py
+!deploy/showcase/*.html

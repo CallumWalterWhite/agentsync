@@ -1,0 +1,11 @@
+[package]
+name = "agentsync-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agentsync-sync-protocol.workspace = true
+age = { version = "0.11", default-features = false }
+anyhow = "1"

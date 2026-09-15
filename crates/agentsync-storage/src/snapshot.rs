@@ -2,8 +2,9 @@
 use crate::{Result, StorageError, Store};
 use agentsync_core::*;
 use agentsync_provider_api::{
+    SensitiveContentCategory,
     safe_fs::{self, FileStamp},
-    sensitive_content,
+    sensitive_content_reason, sensitive_content_reason_for_category,
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -14,8 +15,16 @@ use std::{
     path::Path,
 };
 
-const MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SensitiveContentPolicy {
+    #[default]
+    Strict,
+    /// Permit conservative keyword-reference matches. Credential-like markers remain blocked.
+    AllowKeywordReferences,
+}
 
 fn invalid(message: &str) -> StorageError {
     StorageError::Invalid(message.into())
@@ -35,7 +44,7 @@ fn valid_hash(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -53,7 +62,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn publish(source: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn publish(source: &Path, target: &Path) -> std::io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let source = CString::new(source.as_os_str().as_bytes())?;
     let target = CString::new(target.as_os_str().as_bytes())?;
@@ -86,7 +95,7 @@ fn publish(source: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn publish(_source: &Path, _target: &Path) -> std::io::Result<()> {
+pub(crate) fn publish(_source: &Path, _target: &Path) -> std::io::Result<()> {
     Err(std::io::Error::other(
         "exclusive snapshot publication is unsupported on this platform",
     ))
@@ -95,6 +104,15 @@ fn publish(_source: &Path, _target: &Path) -> std::io::Result<()> {
 /// Capture a freshly validated adapter plan. Publication is atomic; SQLite registration follows.
 /// A crash between these steps leaves an immutable orphan, never a database reference to partial bytes.
 pub fn capture(store: &mut Store, session: &Session, plan: SnapshotPlan) -> Result<Snapshot> {
+    capture_with_policy(store, session, plan, SensitiveContentPolicy::Strict)
+}
+
+pub fn capture_with_policy(
+    store: &mut Store,
+    session: &Session,
+    plan: SnapshotPlan,
+    sensitive_content_policy: SensitiveContentPolicy,
+) -> Result<Snapshot> {
     if !valid_id(&session.id.0, "ags_")
         || plan.provider != session.discovered.provider
         || plan.provider_session_id != session.discovered.provider_session_id
@@ -136,10 +154,19 @@ pub fn capture(store: &mut Store, session: &Session, plan: SnapshotPlan) -> Resu
         if bytes.len() as u64 > MAX_OBJECT_BYTES || total > MAX_BUNDLE_BYTES {
             return Err(invalid("snapshot exceeds size limit"));
         }
-        if sensitive_content(&bytes) {
-            return Err(invalid(
-                "snapshot refused: transcript contains a sensitive-content marker; no transcript bytes were stored",
-            ));
+        let sensitive_reason = match sensitive_content_policy {
+            SensitiveContentPolicy::Strict => sensitive_content_reason(&bytes),
+            SensitiveContentPolicy::AllowKeywordReferences => {
+                sensitive_content_reason_for_category(
+                    &bytes,
+                    SensitiveContentCategory::CredentialMarker,
+                )
+            }
+        };
+        if let Some(reason) = sensitive_reason {
+            return Err(invalid(&format!(
+                "snapshot refused: {reason}; no transcript bytes were stored"
+            )));
         }
         let digest = hash(&bytes);
         if digest != planned.expected_sha256 {
@@ -192,6 +219,13 @@ pub fn capture(store: &mut Store, session: &Session, plan: SnapshotPlan) -> Resu
         });
     }
     objects.sort_by(|a, b| a.logical_path.cmp(&b.logical_path));
+    let mut limitations = plan.limitations;
+    if sensitive_content_policy == SensitiveContentPolicy::AllowKeywordReferences {
+        limitations.push(
+            "Capture used --force to allow conservative sensitive keyword-reference matches; credential-like markers remained blocked."
+                .into(),
+        );
+    }
     let manifest = SnapshotManifest {
         format_version: 1,
         snapshot_id: SnapshotId::new(),
@@ -209,7 +243,7 @@ pub fn capture(store: &mut Store, session: &Session, plan: SnapshotPlan) -> Resu
             dirty: g.dirty,
         }),
         objects,
-        limitations: plan.limitations,
+        limitations,
     };
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
     write_new(&staging.path().join("manifest.json"), &manifest_bytes)?;
@@ -441,7 +475,8 @@ mod tests {
     #[test]
     fn sensitive_second_file_prevents_persisting_any_native_bytes() {
         let safe_payload = b"unique synthetic transcript payload";
-        let sensitive_payload = b"{\"access_token\":\"synthetic-marker-value\"}";
+        let sensitive_payload =
+            b"{\"text\":\"synthetic line\"}\n{\"access_token\":\"synthetic-marker-value\"}";
         let mut fixture = Fixture::new(safe_payload);
         let mut plan = fixture.plan();
         let sensitive_source = fixture.provider.join("second.jsonl");
@@ -454,7 +489,10 @@ mod tests {
         let error = capture(&mut fixture.store, &fixture.session, plan)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("sensitive-content marker"));
+        assert!(error.contains("sensitive_keyword_reference at line 2"));
+        assert!(error.contains("ordinary discussion can trigger this rule"));
+        assert!(error.contains("no transcript bytes were stored"));
+        assert!(!error.contains("access_token"));
         assert!(!error.contains("synthetic-marker-value"));
         fixture.assert_empty();
         assert_eq!(fs::read(&fixture.source).unwrap(), safe_payload);
@@ -477,6 +515,71 @@ mod tests {
                 assert_eq!(fs::read_dir(entry.path()).unwrap().count(), 0);
             }
         }
+    }
+
+    #[test]
+    fn ordinary_sensitive_references_remain_blocked_with_safe_explanations() {
+        for reference in [".ENV", "PASSWORD", "CREDENTIALS"] {
+            let payload =
+                format!("synthetic first line\nDiscuss protecting {reference}: private-discussion");
+            let mut fixture = Fixture::new(payload.as_bytes());
+            let plan = fixture.plan();
+            let error = capture(&mut fixture.store, &fixture.session, plan)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sensitive_keyword_reference at line 2"));
+            assert!(error.contains("ordinary discussion can trigger this rule"));
+            assert!(!error.contains(reference));
+            assert!(!error.contains("private-discussion"));
+            fixture.assert_empty();
+            assert_eq!(fs::read(&fixture.source).unwrap(), payload.as_bytes());
+        }
+    }
+
+    #[test]
+    fn force_allows_keyword_references_and_records_that_choice() {
+        let payload = b"synthetic first line\nDiscuss protecting credentials in tests";
+        let mut fixture = Fixture::new(payload);
+        let plan = fixture.plan();
+        let snapshot = capture_with_policy(
+            &mut fixture.store,
+            &fixture.session,
+            plan,
+            SensitiveContentPolicy::AllowKeywordReferences,
+        )
+        .unwrap();
+        verify(&snapshot).unwrap();
+        assert_eq!(fs::read(&fixture.source).unwrap(), payload);
+        assert_eq!(
+            fs::read(snapshot.directory.join("objects").join(hash(payload))).unwrap(),
+            payload
+        );
+        assert!(
+            snapshot
+                .manifest
+                .limitations
+                .iter()
+                .any(|value| value.contains("--force") && value.contains("credential-like"))
+        );
+    }
+
+    #[test]
+    fn force_never_allows_credential_markers_even_after_keyword_references() {
+        let payload = b"Discuss credentials first\nthen ghp_SYNTHETIC_VALUE";
+        let mut fixture = Fixture::new(payload);
+        let plan = fixture.plan();
+        let error = capture_with_policy(
+            &mut fixture.store,
+            &fixture.session,
+            plan,
+            SensitiveContentPolicy::AllowKeywordReferences,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("sensitive_credential_marker at line 2"));
+        assert!(!error.contains("SYNTHETIC_VALUE"));
+        fixture.assert_empty();
+        assert_eq!(fs::read(&fixture.source).unwrap(), payload);
     }
 
     #[test]

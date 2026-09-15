@@ -1,0 +1,25 @@
+name: agentsync-showcase
+services:
+  showcase:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: showcase
+    ports:
+      - "127.0.0.1:${AGENTSYNC_SHOWCASE_PORT:-8788}:8788"
+    read_only: true
+    tmpfs:
+      - /demo:uid=10001,gid=10001,mode=0700,size=256m
+      - /tmp:uid=10001,gid=10001,mode=0700,size=128m
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

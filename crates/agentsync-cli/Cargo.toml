@@ -10,6 +10,8 @@ name = "agentsync"
 path = "src/main.rs"
 
 [dependencies]
+agentsync-sync-client.workspace = true
+tempfile.workspace = true
 agentsync-core.workspace = true
 agentsync-provider-api.workspace = true
 agentsync-provider-claude.workspace = true
@@ -24,6 +26,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+age = { version = "0.11", default-features = false }
+axum = "0.8"
+agentsync-server.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync"] }
 sha2.workspace = true
 

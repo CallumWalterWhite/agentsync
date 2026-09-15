@@ -9,6 +9,10 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+agentsync-crypto = { path = "crates/agentsync-crypto" }
+agentsync-sync-protocol = { path = "crates/agentsync-sync-protocol" }
+agentsync-sync-client = { path = "crates/agentsync-sync-client" }
+agentsync-server = { path = "crates/agentsync-server" }
 agentsync-core = { path = "crates/agentsync-core" }
 agentsync-provider-api = { path = "crates/agentsync-provider-api" }
 agentsync-provider-claude = { path = "crates/agentsync-provider-claude" }

@@ -1,4 +1,5 @@
 //! AgentSync-owned local metadata. Native provider payloads never enter SQLite.
+pub mod bundle;
 pub mod snapshot;
 
 use agentsync_core::*;
@@ -107,12 +108,16 @@ impl Store {
                 transaction.pragma_update(None, "user_version", 1)?;
                 transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
             }
-            1 => (),
+            1 | 2 => (),
             _ => {
                 return Err(StorageError::Invalid(
                     "database schema is newer than supported".into(),
                 ));
             }
+        }
+        if version < 2 {
+            transaction.execute_batch(include_str!("../migrations/0002_imported_snapshots.sql"))?;
+            transaction.pragma_update(None, "user_version", 2)?;
         }
         let device = Device {
             id: DeviceId::new(),
@@ -123,6 +128,7 @@ impl Store {
             params![device.id.0, serde_json::to_string(&device)?],
         )?;
         transaction.commit()?;
+        private_directory(&root.join("imports"))?;
         Ok(Self { root, connection })
     }
 
@@ -350,6 +356,23 @@ impl Store {
         };
         // Registration is public: require complete, intact files before metadata can refer to them.
         snapshot::verify(&snapshot)?;
+        let imported_json: Option<String> = transaction
+            .query_row(
+                "SELECT metadata_json FROM imported_snapshots WHERE snapshot_id=?1",
+                [&snapshot.manifest.snapshot_id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(json) = imported_json {
+            let imported: ImportedSnapshot = serde_json::from_str(&json)?;
+            if imported.snapshot.manifest_sha256 != snapshot.manifest_sha256
+                || imported.snapshot.version.ordinal != snapshot.version.ordinal
+            {
+                return Err(StorageError::Invalid(
+                    "local snapshot identity conflicts with an imported snapshot".into(),
+                ));
+            }
+        }
         transaction.execute("INSERT INTO session_versions(id, session_id, ordinal, snapshot_id) VALUES (?1, ?2, ?3, ?4)", params![snapshot.version.id.0, snapshot.version.session_id.0, ordinal, snapshot.version.snapshot_id.0])?;
         transaction.execute("INSERT INTO snapshots(id, session_id, version_id, manifest_sha256, directory, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![snapshot.manifest.snapshot_id.0, snapshot.manifest.session_id.0, snapshot.version.id.0, snapshot.manifest_sha256, path_string(&snapshot.directory)?, serde_json::to_string(&snapshot)?])?;
         for object in &snapshot.manifest.objects {
@@ -357,6 +380,110 @@ impl Store {
         }
         transaction.commit()?;
         Ok(snapshot)
+    }
+
+    pub fn snapshot(&self, id: &SnapshotId) -> Result<Option<Snapshot>> {
+        let json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT metadata_json FROM snapshots WHERE id=?1",
+                [&id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(json.map(|value| serde_json::from_str(&value)).transpose()?)
+    }
+
+    pub fn imported_snapshots(&self) -> Result<Vec<ImportedSnapshot>> {
+        query_json(
+            &self.connection,
+            "SELECT metadata_json FROM imported_snapshots ORDER BY snapshot_id",
+            [],
+        )
+    }
+
+    pub fn imported_snapshot(&self, id: &SnapshotId) -> Result<Option<ImportedSnapshot>> {
+        let json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT metadata_json FROM imported_snapshots WHERE snapshot_id=?1",
+                [&id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(json.map(|value| serde_json::from_str(&value)).transpose()?)
+    }
+
+    /// Import catalog is separate from locally discovered sessions and device identity.
+    pub(crate) fn register_imported_snapshot(
+        &mut self,
+        snapshot: Snapshot,
+    ) -> Result<ImportedSnapshot> {
+        bundle::validate_metadata(&snapshot)?;
+        let manifest = &snapshot.manifest;
+        if manifest.format_version != 1
+            || !valid_id(&manifest.snapshot_id.0, "snp_")
+            || !valid_id(&manifest.session_id.0, "ags_")
+            || !valid_id(&manifest.version_id.0, "ver_")
+            || !valid_id(&manifest.device_id.0, "dev_")
+            || manifest.objects.is_empty()
+            || manifest.objects.len() > 128
+            || snapshot.version.id != manifest.version_id
+            || snapshot.version.session_id != manifest.session_id
+            || snapshot.version.snapshot_id != manifest.snapshot_id
+            || snapshot.version.ordinal == 0
+            || !valid_hash(&snapshot.manifest_sha256)
+            || snapshot.directory != self.root.join("imports").join(&manifest.snapshot_id.0)
+        {
+            return Err(StorageError::Invalid(
+                "invalid imported snapshot metadata".into(),
+            ));
+        }
+        bundle::verify(&snapshot)?;
+        let imported = ImportedSnapshot {
+            snapshot,
+            imported_at: Utc::now(),
+        };
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let local: Option<(String, i64)> = transaction.query_row(
+            "SELECT s.manifest_sha256, v.ordinal FROM snapshots s JOIN session_versions v ON v.id=s.version_id WHERE s.id=?1",
+            [&imported.snapshot.manifest.snapshot_id.0], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+        if local.is_some_and(|(hash, ordinal)| {
+            hash != imported.snapshot.manifest_sha256
+                || ordinal as u64 != imported.snapshot.version.ordinal
+        }) {
+            return Err(StorageError::Invalid(
+                "imported snapshot identity conflicts with a local snapshot".into(),
+            ));
+        }
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT metadata_json FROM imported_snapshots WHERE snapshot_id=?1",
+                [&imported.snapshot.manifest.snapshot_id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(json) = existing {
+            let existing: ImportedSnapshot = serde_json::from_str(&json)?;
+            if serde_json::to_value(&existing.snapshot)?
+                != serde_json::to_value(&imported.snapshot)?
+            {
+                return Err(StorageError::Invalid(
+                    "imported snapshot identity conflicts with existing content".into(),
+                ));
+            }
+            bundle::verify(&existing.snapshot)?;
+            return Ok(existing);
+        }
+        transaction.execute(
+            "INSERT INTO imported_snapshots(snapshot_id, manifest_sha256, directory, metadata_json) VALUES (?1, ?2, ?3, ?4)",
+            params![imported.snapshot.manifest.snapshot_id.0, imported.snapshot.manifest_sha256, path_string(&imported.snapshot.directory)?, serde_json::to_string(&imported)?],
+        )?;
+        transaction.commit()?;
+        Ok(imported)
     }
 }
 
@@ -443,6 +570,7 @@ fn recognize_root(root: &Path) -> Result<()> {
                     | "state.db-wal"
                     | "state.db-shm"
                     | "snapshots"
+                    | "imports"
                     | "config"
                     | "logs"
             )
@@ -600,12 +728,75 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         drop(store);
         let reopened = Store::open(&root).unwrap();
         reopened.health_check().unwrap();
         assert_eq!(reopened.device().unwrap().id, device.id);
         assert_eq!(reopened.device().unwrap().created_at, device.created_at);
+    }
+
+    #[test]
+    fn migration_two_preserves_local_identity_metadata_and_snapshot_bytes() {
+        let (temp, mut store) = fixture_store();
+        let root = store.root().to_owned();
+        let provider = temp.path().canonicalize().unwrap().join("fixture-provider");
+        fs::create_dir(&provider).unwrap();
+        let source = provider.join("transcript.jsonl");
+        let bytes = b"{\"message\":\"synthetic migration fixture\"}\n";
+        fs::write(&source, bytes).unwrap();
+        let mut discovered = candidate(
+            "native-migration",
+            source.to_str().unwrap(),
+            "/synthetic/project",
+        );
+        discovered.provider_version = Some(ProviderVersion("1.0.0".into()));
+        store
+            .record_discovery(&[], &[(discovered, None)], &[])
+            .unwrap();
+        let device = store.device().unwrap();
+        let session = store.sessions().unwrap().remove(0);
+        let captured = snapshot::capture(
+            &mut store,
+            &session,
+            SnapshotPlan {
+                provider: session.discovered.provider.clone(),
+                provider_session_id: session.discovered.provider_session_id.clone(),
+                allowed_root: provider,
+                files: vec![PlannedFile {
+                    source,
+                    expected_sha256: format!("{:x}", Sha256::digest(bytes)),
+                    logical_path: "sessions/fixture.jsonl".into(),
+                }],
+                limitations: vec![],
+            },
+        )
+        .unwrap();
+        let manifest_bytes = fs::read(captured.directory.join("manifest.json")).unwrap();
+        // Remove only the additive schema in this isolated fixture to recreate version 1.
+        store
+            .connection
+            .execute_batch("DROP TABLE imported_snapshots; PRAGMA user_version=1;")
+            .unwrap();
+        fs::remove_dir(root.join("imports")).unwrap();
+        drop(store);
+
+        let upgraded = Store::open(&root).unwrap();
+        assert_eq!(upgraded.device().unwrap().id, device.id);
+        assert_eq!(upgraded.sessions().unwrap()[0].id, session.id);
+        assert_eq!(upgraded.projects().unwrap().len(), 1);
+        assert!(upgraded.imported_snapshots().unwrap().is_empty());
+        let versions = upgraded.snapshots(&session.id).unwrap();
+        assert_eq!(versions.len(), 1);
+        snapshot::verify(&versions[0]).unwrap();
+        assert_eq!(
+            fs::read(captured.directory.join("manifest.json")).unwrap(),
+            manifest_bytes
+        );
+        drop(upgraded);
+        let reopened = Store::open(&root).unwrap();
+        assert_eq!(reopened.device().unwrap().id, device.id);
+        assert_eq!(reopened.snapshots(&session.id).unwrap().len(), 1);
     }
 
     #[test]

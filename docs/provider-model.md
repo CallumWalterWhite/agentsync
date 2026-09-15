@@ -19,6 +19,8 @@ The Claude adapter gets the working directory from typed `cwd` metadata, not the
 
 Both bundles currently contain one primary transcript. Ancillary files, indexes, provider databases, archived/related sessions, caches, memory, logs, credentials, generic settings, and environment files are excluded. Native restore compatibility has not been established. See [Claude compatibility](provider-claude.md) and [Codex compatibility](provider-codex.md) for evidence and limitations.
 
+Local bundle export/import operates on already captured native objects without expanding the provider allowlist. Storage verifies their manifest/object integrity and sensitivity; it does not interpret a foreign provider layout or prove compatibility with the destination installation. Imports preserve foreign identity in a separate catalog and never write provider files or create a local provider session. Manual transfer and verified import therefore do not make a transcript resumable.
+
 ## Adding or extending an adapter
 
 Keep all provider-specific interpretation inside its adapter. Document the observed layout and exact supported versions, separating observed evidence from assumptions. Require synthetic fixtures, absence coverage, malformed/truncated input coverage, unknown-version handling, identity conflict checks, and safe snapshot-plan tests. Every test must use explicit fixture roots; constructing an adapter must not inspect the developer's home or PATH.

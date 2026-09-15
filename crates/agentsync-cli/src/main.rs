@@ -4,7 +4,7 @@ use agentsync_provider_api::{
 };
 use agentsync_provider_claude::ClaudeProvider;
 use agentsync_provider_codex::CodexProvider;
-use agentsync_storage::{Store, snapshot};
+use agentsync_storage::{Store, bundle, snapshot};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
@@ -37,6 +37,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Init,
+    /// Encrypt and upload a verified snapshot to a private relay.
+    Push {
+        snapshot_id: String,
+        #[arg(long)]
+        server: String,
+        /// Destination machine's public age recipient (age1...).
+        #[arg(long)]
+        recipient: String,
+    },
+    /// Download a sender-pinned transfer, decrypt and import into AgentSync.
+    Pull {
+        transfer_sha256: String,
+        #[arg(long)]
+        server: String,
+    },
     Doctor,
     Providers,
     Projects,
@@ -49,6 +64,9 @@ enum Command {
     Discover,
     Snapshot {
         session_id: String,
+        /// Allow conservative keyword-reference matches. Credential-like markers remain blocked.
+        #[arg(long)]
+        force: bool,
     },
     Snapshots {
         session_id: String,
@@ -56,6 +74,30 @@ enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Exchange verified local bundles without restoring provider state.
+    Bundle {
+        #[command(subcommand)]
+        command: BundleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleCommand {
+    /// Publish a portable copy of a local or imported snapshot in a new directory.
+    Export {
+        snapshot_id: String,
+        destination: PathBuf,
+    },
+    /// Import a transferred bundle, pinning the manifest hash supplied by its trusted source.
+    Import {
+        source: PathBuf,
+        #[arg(long)]
+        manifest_sha256: String,
+    },
+    /// List imported snapshots; imported bundles do not become native provider sessions.
+    List,
+    /// Verify one imported snapshot's manifest and objects.
+    Verify { snapshot_id: String },
 }
 #[derive(Args, Default)]
 struct SessionFilter {
@@ -72,6 +114,7 @@ enum SessionCommand {
 
 struct Environment {
     home: PathBuf,
+    provider_roots: Vec<PathBuf>,
     providers: Vec<Box<dyn AgentProvider>>,
 }
 fn absolute(path: PathBuf) -> Result<PathBuf> {
@@ -122,12 +165,13 @@ fn environment(cli: &Cli) -> Result<Environment> {
             .unwrap_or_else(|| user_home.join(".codex")),
     )?;
     let resolved_home = resolved_candidate(&home)?;
-    for provider_root in [
-        &claude,
-        &codex,
-        &user_home.join(".claude"),
-        &user_home.join(".codex"),
-    ] {
+    let provider_roots = vec![
+        claude.clone(),
+        codex.clone(),
+        user_home.join(".claude"),
+        user_home.join(".codex"),
+    ];
+    for provider_root in &provider_roots {
         let resolved = resolved_candidate(provider_root)?;
         if resolved_home.starts_with(&resolved) || resolved.starts_with(&resolved_home) {
             bail!("AgentSync storage must not overlap a provider directory");
@@ -146,11 +190,36 @@ fn environment(cli: &Cli) -> Result<Environment> {
         .flatten();
     Ok(Environment {
         home,
+        provider_roots,
         providers: vec![
             Box::new(ClaudeProvider::new(claude).with_executable(claude_exe)),
             Box::new(CodexProvider::new(codex).with_executable(codex_exe)),
         ],
     })
+}
+
+fn transfer_path(env: &Environment, path: PathBuf) -> Result<PathBuf> {
+    let path = absolute(path)?;
+    let resolved = resolved_candidate(&path)?;
+    for protected in env.provider_roots.iter().chain(std::iter::once(&env.home)) {
+        let protected = resolved_candidate(protected)?;
+        if resolved.starts_with(&protected) || protected.starts_with(&resolved) {
+            bail!(
+                "bundle transfer path must not overlap provider or AgentSync storage directories"
+            );
+        }
+    }
+    Ok(path)
+}
+
+fn snapshot_id(value: &str) -> Result<SnapshotId> {
+    let suffix = value
+        .strip_prefix("snp_")
+        .context("expected an AgentSync snapshot ID (snp_<uuid>)")?;
+    if suffix.len() != 36 || uuid::Uuid::parse_str(suffix).is_err() {
+        bail!("invalid AgentSync snapshot ID");
+    }
+    Ok(SnapshotId(value.into()))
 }
 
 fn collect(providers: &[Box<dyn AgentProvider>]) -> (Vec<ProviderInstallation>, DiscoveryReport) {
@@ -318,6 +387,26 @@ fn doctor(env: &Environment, json: bool) -> Result<()> {
                     }
                 }
             }
+            for imported in store.imported_snapshots()? {
+                registered.insert(imported.snapshot.directory.clone());
+                if bundle::verify(&imported.snapshot).is_err() {
+                    result.diagnostics.push(Diagnostic {
+                        severity: Severity::Error,
+                        code: "imported_snapshot_corrupt".into(),
+                        message: "An imported snapshot is missing or failed integrity verification"
+                            .into(),
+                        provider: None,
+                        path: Some(imported.snapshot.directory),
+                    });
+                }
+            }
+            for path in
+                agentsync_provider_api::safe_fs::regular_entries(&store.root().join("imports"))?
+            {
+                if !registered.contains(&path) {
+                    result.diagnostics.push(Diagnostic::warning("import_orphan", "Unregistered imported snapshot or staging directory found; retained for inspection", Some(path)));
+                }
+            }
             if let Ok(parents) =
                 agentsync_provider_api::safe_fs::regular_entries(&store.root().join("snapshots"))
             {
@@ -388,6 +477,64 @@ fn run(cli: Cli) -> Result<()> {
     }
     let mut store = Store::open(&env.home)?;
     match cli.command {
+        Command::Push {
+            snapshot_id: value,
+            server,
+            recipient,
+        } => {
+            let token = std::env::var("AGENTSYNC_RELAY_TOKEN")
+                .map_err(|_| anyhow::anyhow!("set AGENTSYNC_RELAY_TOKEN for relay access"))?;
+            let client = agentsync_sync_client::RelayClient::new(&server, &token)?;
+            let id = snapshot_id(&value)?;
+            let selected = match store.snapshot(&id)? {
+                Some(item) => item,
+                None => {
+                    store
+                        .imported_snapshot(&id)?
+                        .context("snapshot not found")?
+                        .snapshot
+                }
+            };
+            let archive = bundle::export_archive(&selected)?;
+            let encrypted = agentsync_sync_client::encrypt(&archive, &recipient)?;
+            let transfer = client.push(encrypted)?;
+            if cli.json {
+                print_json(&transfer)?;
+            } else {
+                println!(
+                    "Uploaded encrypted snapshot {}\nTransfer SHA-256: {}",
+                    id, transfer.transfer_sha256
+                );
+                println!("Give this hash to the receiving machine through a trusted channel.");
+            }
+        }
+        Command::Pull {
+            transfer_sha256,
+            server,
+        } => {
+            let token = std::env::var("AGENTSYNC_RELAY_TOKEN")
+                .map_err(|_| anyhow::anyhow!("set AGENTSYNC_RELAY_TOKEN for relay access"))?;
+            let identity = std::env::var("AGENTSYNC_AGE_IDENTITY").map_err(|_| {
+                anyhow::anyhow!(
+                    "set AGENTSYNC_AGE_IDENTITY to the receiving machine's age identity"
+                )
+            })?;
+            let client = agentsync_sync_client::RelayClient::new(&server, &token)?;
+            let encrypted = client.pull(&transfer_sha256)?;
+            let archive = agentsync_sync_client::decrypt(&encrypted, &identity)?;
+            let imported = bundle::import_archive(&mut store, &archive)?;
+            if cli.json {
+                print_json(&imported)?;
+            } else {
+                println!(
+                    "Imported {}\nSource device: {}",
+                    imported.snapshot.manifest.snapshot_id, imported.snapshot.manifest.device_id
+                );
+                println!(
+                    "Stored in AgentSync. Native provider session restore is not implemented."
+                );
+            }
+        }
         Command::Init => {
             let device = store.device()?;
             if cli.json {
@@ -438,8 +585,20 @@ fn run(cli: Cli) -> Result<()> {
                 let session = store
                     .session(&session_id(&id)?)?
                     .context("session not found; run agentsync discover")?;
+                let diagnostics: Vec<_> = store
+                    .diagnostics()?
+                    .into_iter()
+                    .filter(|d| {
+                        d.path.as_ref() == Some(&session.discovered.source_path)
+                            && d.provider
+                                .as_ref()
+                                .is_none_or(|p| p == &session.discovered.provider)
+                    })
+                    .collect();
                 if cli.json {
-                    print_json(&session)?;
+                    let mut output = serde_json::to_value(&session)?;
+                    output["diagnostics"] = serde_json::to_value(&diagnostics)?;
+                    print_json(&output)?;
                 } else {
                     println!(
                         "{}\nProvider: {}\nNative ID: {}\nStatus: {:?}\nProject: {}\nSource (local): {}\nVersions: {}",
@@ -454,6 +613,21 @@ fn run(cli: Cli) -> Result<()> {
                         session.discovered.source_path.display(),
                         store.snapshots(&session.id)?.len()
                     );
+                    if diagnostics.is_empty() {
+                        if matches!(
+                            session.discovered.status,
+                            SessionStatus::Incomplete | SessionStatus::Unknown
+                        ) {
+                            println!(
+                                "No reasons retained from the latest discovery. Run agentsync discover to refresh diagnostics."
+                            );
+                        }
+                    } else {
+                        println!("Diagnostics from latest discovery:");
+                        for diagnostic in diagnostics {
+                            println!("  {}: {}", diagnostic.code, diagnostic.message);
+                        }
+                    }
                 }
             }
             _ => {
@@ -500,7 +674,10 @@ fn run(cli: Cli) -> Result<()> {
                 print_diagnostics(&diagnostics);
             }
         }
-        Command::Snapshot { session_id: value } => {
+        Command::Snapshot {
+            session_id: value,
+            force,
+        } => {
             let id = session_id(&value)?;
             let existing = store
                 .session(&id)?
@@ -516,12 +693,27 @@ fn run(cli: Cli) -> Result<()> {
                     && s.source_path == existing.discovered.source_path
             });
             if report.sessions.len() != 1 {
+                let reasons = report
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.path.as_ref() == Some(&existing.discovered.source_path))
+                    .map(|d| format!("{}: {}", d.code, d.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if !reasons.is_empty() {
+                    bail!("session source cannot be safely identified: {reasons}");
+                }
                 bail!("session source is missing or cannot be safely identified");
             }
             persist(&mut store, &[provider.detect()?], report)?;
             let session = store.session(&id)?.context("session disappeared")?;
             let plan = provider.snapshot_plan(&session.discovered)?;
-            let captured = snapshot::capture(&mut store, &session, plan)?;
+            let policy = if force {
+                snapshot::SensitiveContentPolicy::AllowKeywordReferences
+            } else {
+                snapshot::SensitiveContentPolicy::Strict
+            };
+            let captured = snapshot::capture_with_policy(&mut store, &session, plan, policy)?;
             if cli.json {
                 print_json(&captured)?;
             } else {
@@ -569,6 +761,92 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{} snapshot(s)", snapshots.len());
             }
         }
+        Command::Bundle { command } => match command {
+            BundleCommand::Export {
+                snapshot_id: value,
+                destination,
+            } => {
+                let id = snapshot_id(&value)?;
+                let destination = transfer_path(&env, destination)?;
+                let local = store.snapshot(&id)?;
+                let selected = match local {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        let imported = store.imported_snapshot(&id)?.context(
+                            "snapshot not found; list local snapshots or imported bundles",
+                        )?;
+                        bundle::verify(&imported.snapshot)?;
+                        imported.snapshot
+                    }
+                };
+                let exported = bundle::export(&selected, &destination)?;
+                if cli.json {
+                    print_json(&exported)?;
+                } else {
+                    println!(
+                        "Exported {}\n{}\nManifest SHA-256: {}",
+                        exported.manifest.snapshot_id,
+                        exported.directory.display(),
+                        exported.manifest_sha256
+                    );
+                    println!(
+                        "Transfer this directory privately. Import with the manifest hash from this trusted source. Native restore is not implemented."
+                    );
+                }
+            }
+            BundleCommand::Import {
+                source,
+                manifest_sha256,
+            } => {
+                let source = transfer_path(&env, source)?;
+                let imported = bundle::import(&mut store, &source, &manifest_sha256)?;
+                if cli.json {
+                    print_json(&imported)?;
+                } else {
+                    println!(
+                        "Imported {}\nSource device: {}\n{}",
+                        imported.snapshot.manifest.snapshot_id,
+                        imported.snapshot.manifest.device_id,
+                        imported.snapshot.directory.display()
+                    );
+                    println!(
+                        "Stored in AgentSync. Native provider session restore is not implemented."
+                    );
+                }
+            }
+            BundleCommand::List => {
+                let imported = store.imported_snapshots()?;
+                if cli.json {
+                    print_json(&imported)?;
+                } else {
+                    for item in &imported {
+                        println!(
+                            "{}  {}  source={}  session={}",
+                            item.snapshot.manifest.snapshot_id,
+                            item.snapshot.manifest.provider,
+                            item.snapshot.manifest.device_id,
+                            item.snapshot.manifest.session_id
+                        );
+                    }
+                    println!(
+                        "{} imported snapshot(s); hashes not checked",
+                        imported.len()
+                    );
+                }
+            }
+            BundleCommand::Verify { snapshot_id: value } => {
+                let id = snapshot_id(&value)?;
+                let imported = store
+                    .imported_snapshot(&id)?
+                    .context("imported snapshot not found")?;
+                bundle::verify(&imported.snapshot)?;
+                if cli.json {
+                    print_json(&imported)?;
+                } else {
+                    println!("{} verified", imported.snapshot.manifest.snapshot_id);
+                }
+            }
+        },
         Command::Doctor => unreachable!(),
     }
     Ok(())

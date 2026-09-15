@@ -231,6 +231,22 @@ pub struct Snapshot {
     pub version: SessionVersion,
 }
 
+/// Portable transfer metadata accompanying unchanged manifest format 1 bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleReceipt {
+    pub format_version: u32,
+    pub manifest_sha256: String,
+    pub version: SessionVersion,
+}
+
+/// A verified foreign snapshot held locally without materializing provider state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedSnapshot {
+    pub snapshot: Snapshot,
+    pub imported_at: DateTime<Utc>,
+}
+
 /// Metadata operations used by application orchestration. Implementations own migrations/transactions.
 pub trait MetadataStore {
     type Error: std::error::Error + Send + Sync + 'static;

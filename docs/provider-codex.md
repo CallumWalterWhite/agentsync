@@ -12,7 +12,31 @@ are regular, non-symlink `sessions/YYYY/MM/DD/rollout-YYYY-MM-DDTHH-MM-SS-<uuid>
 The first event is `session_meta` with `payload.id`, `payload.cwd`,
 `payload.timestamp`, and `payload.cli_version`. Its ID must match the filename.
 The envelope can include `ordinal`. Optional `source` is either a string or an
-object, including subagent ancestry. These extra values are ignored.
+object, including subagent ancestry. Only explicitly supported ancestry fields
+are interpreted; unrelated payload fields are ignored.
+
+### Repeated and inherited metadata
+
+A structural investigation on 2026-09-15 found a stable, valid JSONL rollout
+whose first header identified the filename-matching child and whose second
+header identified its declared parent. The child supplied matching
+`forked_from_id` and `source.subagent.thread_spawn.parent_thread_id` values.
+Previously, any repeated header caused an `Incomplete` status.
+
+The adapter now accepts a consecutive initial prefix of parent headers only
+when each parent is declared by both matching fields in the preceding child.
+IDs must be canonical UUIDs, ancestry must not cycle, and the chain is bounded
+to 128 headers. Every header must contain safe scalar metadata and a tested
+provider version. The first child header remains authoritative for session ID,
+working directory, version, and timestamp. A parent reference without an embedded
+parent header does not require that another file be present or inspected.
+
+Consistent repeated primary headers are also accepted. Changes to primary
+identity, working directory, timestamp, version, or ancestry remain conflicts.
+Unrelated headers, parents appearing after ordinary events, unsupported versions,
+malformed records, missing final newlines, and unstable files still block capture.
+No native bytes are removed, rewritten, or merged. Synthetic fork fixtures cover
+this compatibility rule; it is not a general allowance for arbitrary mixed sessions.
 
 Discovery projects only typed metadata. It checks bounded JSONL syntax without
 persisting transcript payloads. Missing valid identity causes a diagnostic and
@@ -43,7 +67,9 @@ not identify the bundle. The storage layer copies into AgentSync-owned storage
 and rejects changes detected during capture. No provider files are written.
 
 This is a **partial native bundle**, not a complete resumable session export.
-Related/forked sessions, SQLite/index state and archived sessions are not captured.
+Separate related/forked session files, SQLite/index state and archived sessions
+are not captured. Validated inherited headers already inside a primary rollout
+are preserved as part of its unchanged native bytes.
 Restoration has not been implemented or verified. Unknown provider versions are
 diagnosed and marked Unknown, and snapshotting them is refused; the same applies
 when a provider version is missing. The supported schema remains conservative. Files exceeding configured
@@ -55,3 +81,17 @@ tripwires and may refuse a snapshot. These are not a proof that arbitrary text
 is secret-free. Treat all local snapshots as private developer data. Credentials
 and configuration are never candidate source files. Symlinked provider trees and
 artifacts are intentionally unsupported.
+
+## Diagnostic reasons
+
+Discovery and snapshot refusal report specific codes such as
+`codex_metadata_conflict`, `codex_invalid_ancestry`, `codex_untested_version`,
+`codex_malformed_event`, `codex_missing_final_newline`, and `codex_source_changed`.
+Line numbers are included where applicable. Accepted repeated/parent headers
+produce informational `codex_repeated_metadata` or `codex_fork_ancestry` reasons.
+Diagnostics contain fixed descriptions and structural positions, not transcript
+excerpts, parent IDs, or raw parser errors.
+
+`agentsync sessions show <id>` includes matching reasons from the latest saved
+discovery. Run `agentsync discover` to refresh them. Snapshot attempts independently
+revalidate the source and report fresh reasons; they do not rely on stale status.

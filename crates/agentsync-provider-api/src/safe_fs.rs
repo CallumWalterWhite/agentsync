@@ -10,6 +10,8 @@ use std::{
 #[derive(Debug)]
 pub struct ReadSummary {
     pub incomplete: bool,
+    pub missing_final_newline: bool,
+    pub changed_during_read: bool,
 }
 
 pub fn validate_relative(path: &Path) -> io::Result<()> {
@@ -150,7 +152,7 @@ pub fn read_jsonl(
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     let mut total = 0_u64;
-    let mut incomplete = false;
+    let mut missing_final_newline = false;
     loop {
         line.clear();
         let n = reader
@@ -167,16 +169,18 @@ pub fn read_jsonl(
             ));
         }
         if !line.ends_with(b"\n") {
-            incomplete = true;
+            missing_final_newline = true;
         }
         callback(&line);
     }
     let after = FileStamp::of(reader.get_ref())?;
     let current = open_regular(root, path)?;
-    if before != after || before != FileStamp::of(&current)? {
-        incomplete = true;
-    }
-    Ok(ReadSummary { incomplete })
+    let changed_during_read = before != after || before != FileStamp::of(&current)?;
+    Ok(ReadSummary {
+        incomplete: missing_final_newline || changed_during_read,
+        missing_final_newline,
+        changed_during_read,
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -215,5 +219,7 @@ mod tests {
         })
         .unwrap();
         assert!(result.incomplete);
+        assert!(result.changed_during_read);
+        assert!(!result.missing_final_newline);
     }
 }

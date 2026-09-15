@@ -3,6 +3,7 @@ use agentsync_provider_api::{safe_fs, *};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ struct Record<'a> {
     payload: &'a serde_json::value::RawValue,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Metadata {
     id: String,
     #[serde(default)]
@@ -28,6 +29,124 @@ struct Metadata {
     timestamp: Option<DateTime<Utc>>,
     #[serde(default)]
     cli_version: Option<String>,
+    #[serde(default)]
+    forked_from_id: Option<String>,
+    #[serde(default)]
+    source: Option<Source>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum Source {
+    Name(String),
+    Details(SourceDetails),
+}
+#[derive(Deserialize, Clone)]
+struct SourceDetails {
+    #[serde(default)]
+    subagent: Option<SubagentSource>,
+}
+#[derive(Deserialize, Clone)]
+struct SubagentSource {
+    #[serde(default)]
+    thread_spawn: Option<ThreadSpawn>,
+}
+#[derive(Deserialize, Clone)]
+struct ThreadSpawn {
+    #[serde(default)]
+    parent_thread_id: Option<String>,
+}
+
+fn canonical_id(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+fn tested_version(version: Option<&str>) -> bool {
+    matches!(version, Some("0.153.2" | "0.154.0"))
+}
+impl Metadata {
+    fn source_parent_id(&self) -> Option<&str> {
+        match &self.source {
+            Some(Source::Details(source)) => source
+                .subagent
+                .as_ref()
+                .and_then(|s| s.thread_spawn.as_ref())
+                .and_then(|s| s.parent_thread_id.as_deref()),
+            _ => None,
+        }
+    }
+    fn parent_id(&self) -> std::result::Result<Option<&str>, ()> {
+        let from_source = self.source_parent_id();
+        let from_fork = self.forked_from_id.as_deref();
+        if from_source.zip(from_fork).is_some_and(|(a, b)| a != b) {
+            return Err(());
+        }
+        let parent = from_fork.or(from_source);
+        if parent.is_some_and(|p| !canonical_id(p) || p == self.id) {
+            return Err(());
+        }
+        Ok(parent)
+    }
+    /// The observed inherited-header layout declares the parent in both fields.
+    fn inherited_parent_id(&self) -> Option<&str> {
+        self.forked_from_id
+            .as_deref()
+            .zip(self.source_parent_id())
+            .filter(|(a, b)| a == b)
+            .map(|(a, _)| a)
+    }
+    fn safe_scalars(&self) -> bool {
+        canonical_id(&self.id)
+            && self
+                .cwd
+                .as_ref()
+                .is_none_or(|v| safe_metadata(v, 4096) && Path::new(v).is_absolute())
+            && self
+                .cli_version
+                .as_ref()
+                .is_none_or(|v| safe_metadata(v, 128))
+            && match &self.source {
+                Some(Source::Name(v)) => safe_metadata(v, 128),
+                _ => true,
+            }
+    }
+    fn consistent_with(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.cwd == other.cwd
+            && self.timestamp == other.timestamp
+            && self.cli_version == other.cli_version
+            && self.parent_id() == other.parent_id()
+            && self.forked_from_id == other.forked_from_id
+            && self.source_parent_id() == other.source_parent_id()
+    }
+}
+
+struct Inspection {
+    session: DiscoveredSession,
+    sha256: String,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Only stable codes, fixed prose, and line numbers may enter diagnostics.
+fn note(
+    diagnostics: &mut Vec<Diagnostic>,
+    code: &str,
+    message: &str,
+    line: Option<usize>,
+    severity: Severity,
+) {
+    if diagnostics.iter().any(|d| d.code == code) {
+        return;
+    }
+    diagnostics.push(Diagnostic {
+        severity,
+        code: code.into(),
+        message: match line {
+            Some(line) => format!("Line {line}: {message}"),
+            None => message.into(),
+        },
+        provider: Some(ProviderId("codex".into())),
+        path: None,
+    });
 }
 
 impl CodexProvider {
@@ -86,86 +205,201 @@ impl CodexProvider {
         (id == stem[20..]).then_some(id)
     }
 
-    fn inspect(
-        &self,
-        path: &Path,
-        context: &DiscoveryContext,
-    ) -> Result<(DiscoveredSession, bool, String)> {
+    fn inspect(&self, path: &Path, context: &DiscoveryContext) -> Result<Inspection> {
         if !safe_metadata(&path.to_string_lossy(), 4096) {
             return Err(ProviderError::Unsafe(
-                "unsupported session source path".into(),
+                "codex_unsafe_source_path: unsupported session source path".into(),
             ));
         }
-        let expected_id = self
-            .file_id(path)
-            .ok_or_else(|| ProviderError::Unsafe("unsupported rollout path".into()))?;
-        let mut metadata = None;
-        let mut malformed = false;
-        let mut first = true;
+        let expected_id = self.file_id(path).ok_or_else(|| {
+            ProviderError::Unsafe("codex_unsupported_layout: unsupported rollout path".into())
+        })?;
+        let mut primary: Option<Metadata> = None;
+        let mut known = HashMap::<String, Metadata>::new();
+        let mut next_parent: Option<String> = None;
+        let mut metadata_prefix = true;
+        let mut incomplete = false;
+        let mut untested = false;
+        let mut diagnostics = Vec::new();
+        let mut line_number = 0;
         let mut hasher = Sha256::new();
         let summary = safe_fs::read_jsonl(&self.root, path, context, |line| {
             hasher.update(line);
-            match serde_json::from_slice::<Record<'_>>(line) {
-                Ok(record) if record.kind == "session_meta" => {
-                    match serde_json::from_str::<Metadata>(record.payload.get()) {
-                        Ok(payload) => {
-                            if !first || metadata.is_some() {
-                                malformed = true;
-                            }
-                            if metadata.is_none() {
-                                metadata = Some(payload);
-                            }
-                        }
-                        Err(_) => malformed = true,
-                    }
+            line_number += 1;
+            let record = match serde_json::from_slice::<Record<'_>>(line) {
+                Ok(record) => record,
+                Err(_) => {
+                    incomplete = true;
+                    metadata_prefix = false;
+                    note(
+                        &mut diagnostics,
+                        "codex_malformed_event",
+                        "Event is not valid JSON or lacks the required event envelope; snapshot unavailable.",
+                        Some(line_number),
+                        Severity::Warning,
+                    );
+                    return;
                 }
-                Ok(_) => {
-                    if first {
-                        malformed = true;
-                    }
+            };
+            if record.kind != "session_meta" {
+                metadata_prefix = false;
+                if line_number == 1 {
+                    incomplete = true;
+                    note(
+                        &mut diagnostics,
+                        "codex_metadata_not_first",
+                        "The first record must identify the session; snapshot unavailable.",
+                        Some(line_number),
+                        Severity::Warning,
+                    );
                 }
-                Err(_) => malformed = true,
+                return;
             }
-            first = false;
+            let metadata = match serde_json::from_str::<Metadata>(record.payload.get()) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    incomplete = true;
+                    note(
+                        &mut diagnostics,
+                        "codex_invalid_metadata",
+                        "Session metadata has missing or unsupported fields; snapshot unavailable.",
+                        Some(line_number),
+                        Severity::Warning,
+                    );
+                    return;
+                }
+            };
+            if !metadata.safe_scalars() {
+                incomplete = true;
+                note(
+                    &mut diagnostics,
+                    "codex_unsafe_metadata",
+                    "Session metadata contains unsafe or unsupported scalar values; snapshot unavailable.",
+                    Some(line_number),
+                    Severity::Warning,
+                );
+            }
+            let parent = match metadata.parent_id() {
+                Ok(parent) => parent.map(str::to_owned),
+                Err(()) => {
+                    incomplete = true;
+                    note(
+                        &mut diagnostics,
+                        "codex_invalid_ancestry",
+                        "Declared parent identifiers are invalid or disagree; snapshot unavailable.",
+                        Some(line_number),
+                        Severity::Warning,
+                    );
+                    None
+                }
+            };
+            if !tested_version(metadata.cli_version.as_deref()) {
+                untested = true;
+                note(
+                    &mut diagnostics,
+                    "codex_untested_version",
+                    "A session or ancestry header has a missing or untested provider version; supported versions are 0.153.2 and 0.154.0. Snapshot unavailable.",
+                    Some(line_number),
+                    Severity::Warning,
+                );
+            }
+            if line_number == 1 {
+                next_parent = metadata.inherited_parent_id().map(str::to_owned);
+                known.insert(metadata.id.clone(), metadata.clone());
+                primary = Some(metadata);
+                return;
+            }
+            // Repeated primary headers are accepted only when the identifying metadata agrees.
+            if let Some(first) = &primary {
+                if metadata.id == first.id {
+                    if first.consistent_with(&metadata) {
+                        note(
+                            &mut diagnostics,
+                            "codex_repeated_metadata",
+                            "Consistent repeated primary metadata accepted; the first header remains authoritative.",
+                            Some(line_number),
+                            Severity::Info,
+                        );
+                    } else {
+                        incomplete = true;
+                        note(
+                            &mut diagnostics,
+                            "codex_metadata_conflict",
+                            "Repeated primary metadata changes identity, directory, timestamp, version, or ancestry; snapshot unavailable.",
+                            Some(line_number),
+                            Severity::Warning,
+                        );
+                    }
+                    return;
+                }
+            }
+            // Fork ancestry is only accepted in the initial consecutive metadata prefix.
+            // Each new header must be the explicitly declared parent of the previous header.
+            if metadata_prefix
+                && next_parent.as_deref() == Some(metadata.id.as_str())
+                && !known.contains_key(&metadata.id)
+                && known.len() < 128
+                && parent.as_ref().is_none_or(|id| !known.contains_key(id))
+            {
+                next_parent = metadata.inherited_parent_id().map(str::to_owned);
+                known.insert(metadata.id.clone(), metadata);
+                note(
+                    &mut diagnostics,
+                    "codex_fork_ancestry",
+                    "Declared parent metadata accepted in the initial fork ancestry prefix; the filename-matching child remains authoritative.",
+                    Some(line_number),
+                    Severity::Info,
+                );
+            } else {
+                incomplete = true;
+                note(
+                    &mut diagnostics,
+                    "codex_metadata_conflict",
+                    "Additional metadata is not a validated initial parent header or consistent primary repeat; snapshot unavailable. Do not edit the native transcript to bypass this check.",
+                    Some(line_number),
+                    Severity::Warning,
+                );
+            }
         })?;
-        let metadata = metadata
-            .ok_or_else(|| ProviderError::Unsafe("missing valid session metadata".into()))?;
+        let metadata = primary.ok_or_else(|| ProviderError::Unsafe(
+            "codex_missing_session_metadata: the first record must contain valid session metadata".into()))?;
         if metadata.id != expected_id {
-            return Err(ProviderError::Unsafe(
-                "rollout identity does not match filename".into(),
-            ));
+            return Err(ProviderError::Unsafe("codex_identity_mismatch: first session identity does not match the rollout filename".into()));
         }
+        if summary.missing_final_newline {
+            note(
+                &mut diagnostics,
+                "codex_missing_final_newline",
+                "The final record has no terminating newline; it may still be written. Retry after the session is idle.",
+                Some(line_number),
+                Severity::Warning,
+            );
+        }
+        if summary.changed_during_read {
+            note(
+                &mut diagnostics,
+                "codex_source_changed",
+                "The rollout changed during inspection. Retry after the session is idle.",
+                None,
+                Severity::Warning,
+            );
+        }
+        incomplete |= summary.incomplete;
         let cwd = metadata
             .cwd
-            .filter(|value| {
-                let safe = safe_metadata(value, 4096) && Path::new(value).is_absolute();
-                if !safe {
-                    malformed = true;
-                }
-                safe
-            })
+            .filter(|v| safe_metadata(v, 4096) && Path::new(v).is_absolute())
             .map(PathBuf::from);
         let version = metadata
             .cli_version
-            .filter(|value| {
-                let safe = safe_metadata(value, 128);
-                if !safe {
-                    malformed = true;
-                }
-                safe
-            })
+            .filter(|v| safe_metadata(v, 128))
             .map(ProviderVersion);
-        let incomplete = malformed || summary.incomplete;
-        let tested_version = version
-            .as_ref()
-            .is_some_and(|v| matches!(v.0.as_str(), "0.153.2" | "0.154.0"));
         let modified_at = safe_fs::open_regular(&self.root, path)?
             .metadata()?
             .modified()
             .ok()
             .map(DateTime::<Utc>::from);
-        Ok((
-            DiscoveredSession {
+        Ok(Inspection {
+            session: DiscoveredSession {
                 provider: self.provider_id(),
                 provider_session_id: ProviderSessionId(expected_id),
                 provider_version: version,
@@ -175,15 +409,15 @@ impl CodexProvider {
                 modified_at,
                 status: if incomplete {
                     SessionStatus::Incomplete
-                } else if tested_version {
-                    SessionStatus::Discovered
-                } else {
+                } else if untested {
                     SessionStatus::Unknown
+                } else {
+                    SessionStatus::Discovered
                 },
             },
-            incomplete,
-            format!("{:x}", hasher.finalize()),
-        ))
+            sha256: format!("{:x}", hasher.finalize()),
+            diagnostics,
+        })
     }
 
     fn visit(
@@ -228,24 +462,65 @@ impl CodexProvider {
             {
                 *examined += 1;
                 match self.inspect(&path, context) {
-                    Ok((session, incomplete, _)) => {
-                        if incomplete {
-                            report.diagnostics.push(self.diagnostic("codex_incomplete", "Rollout contains malformed or incomplete events; snapshot unavailable", &path));
+                    Ok(mut inspection) => {
+                        for diagnostic in &mut inspection.diagnostics {
+                            diagnostic.path =
+                                safe_metadata(&path.to_string_lossy(), 4096).then(|| path.clone());
                         }
-                        if !session
-                            .provider_version
-                            .as_ref()
-                            .is_some_and(|v| matches!(v.0.as_str(), "0.153.2" | "0.154.0"))
-                        {
-                            report.diagnostics.push(self.diagnostic("codex_untested_version", "Session provider version is missing or untested; snapshot unavailable", &path));
-                        }
-                        report.sessions.push(session);
+                        report.diagnostics.extend(inspection.diagnostics);
+                        report.sessions.push(inspection.session);
                     }
-                    Err(_) => report.diagnostics.push(self.diagnostic(
-                        "codex_unsupported_session",
-                        "Rollout could not be safely identified or fully inspected",
-                        &path,
-                    )),
+                    Err(error) => {
+                        let (code, message) = match &error {
+                            ProviderError::Unsafe(message)
+                                if message.starts_with("codex_missing_session_metadata:") =>
+                            {
+                                (
+                                    "codex_missing_session_metadata",
+                                    "The first record does not contain valid session metadata; snapshot unavailable.",
+                                )
+                            }
+                            ProviderError::Unsafe(message)
+                                if message.starts_with("codex_identity_mismatch:") =>
+                            {
+                                (
+                                    "codex_identity_mismatch",
+                                    "The first session identifier does not match the rollout filename; snapshot unavailable.",
+                                )
+                            }
+                            ProviderError::Unsafe(message)
+                                if message.starts_with("codex_unsafe_source_path:") =>
+                            {
+                                (
+                                    "codex_unsafe_source_path",
+                                    "The source path contains unsafe or unsupported metadata; snapshot unavailable.",
+                                )
+                            }
+                            ProviderError::Unsafe(message)
+                                if message.starts_with("codex_unsupported_layout:") =>
+                            {
+                                (
+                                    "codex_unsupported_layout",
+                                    "The rollout path is outside the supported layout; snapshot unavailable.",
+                                )
+                            }
+                            ProviderError::Unsafe(message)
+                                if message.starts_with("session exceeds") =>
+                            {
+                                (
+                                    "codex_size_limit",
+                                    "The rollout exceeds configured file or line limits; snapshot unavailable.",
+                                )
+                            }
+                            _ => (
+                                "codex_unsupported_session",
+                                "Rollout could not be safely opened or identified; snapshot unavailable.",
+                            ),
+                        };
+                        report
+                            .diagnostics
+                            .push(self.diagnostic(code, message, &path));
+                    }
                 }
             }
         }
@@ -320,19 +595,28 @@ impl AgentProvider for CodexProvider {
         if session.provider != self.provider_id() {
             return Err(ProviderError::Unsafe("provider mismatch".into()));
         }
-        let (fresh, incomplete, expected_sha256) =
-            self.inspect(&session.source_path, &DiscoveryContext::default())?;
-        if incomplete
-            || fresh.status != SessionStatus::Discovered
-            || fresh.provider_session_id != session.provider_session_id
-        {
+        let inspection = self.inspect(&session.source_path, &DiscoveryContext::default())?;
+        let fresh = inspection.session;
+        if fresh.provider_session_id != session.provider_session_id {
             return Err(ProviderError::Unsafe(
-                "session is incomplete, untested or identity changed".into(),
+                "codex_identity_changed: session identity changed since discovery; run agentsync discover".into(),
             ));
+        }
+        if fresh.status != SessionStatus::Discovered {
+            let reasons = inspection
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity != Severity::Info)
+                .map(|d| format!("{}: {}", d.code, d.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(ProviderError::Unsafe(format!(
+                "snapshot unavailable: {reasons}"
+            )));
         }
         Ok(SnapshotPlan {
             provider: self.provider_id(), provider_session_id: fresh.provider_session_id.clone(), allowed_root: self.root.clone(),
-            files: vec![PlannedFile { source: session.source_path.clone(), logical_path: PathBuf::from(format!("sessions/{}.jsonl", fresh.provider_session_id.0)), expected_sha256 }],
+            files: vec![PlannedFile { source: session.source_path.clone(), logical_path: PathBuf::from(format!("sessions/{}.jsonl", fresh.provider_session_id.0)), expected_sha256: inspection.sha256 }],
             limitations: vec!["Partial native bundle: one rollout artifact only; provider indexes, databases, configuration and related sessions are excluded. Restore compatibility is unverified.".into()],
         })
     }

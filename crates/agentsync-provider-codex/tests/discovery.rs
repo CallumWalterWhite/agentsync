@@ -141,13 +141,13 @@ fn oversized_file_does_not_stop_discovery() {
 }
 
 #[test]
-fn missing_newline_and_duplicate_metadata_are_incomplete() {
+fn missing_newline_and_conflicting_metadata_are_incomplete() {
     for contents in [
         include_str!("fixtures/valid.jsonl").trim_end().to_owned(),
         format!(
             "{}{}",
             include_str!("fixtures/valid.jsonl"),
-            include_str!("fixtures/valid.jsonl")
+            include_str!("fixtures/valid.jsonl").replace("/work/polaris", "/work/different")
         ),
     ] {
         let root = tempdir();
@@ -158,6 +158,182 @@ fn missing_newline_and_duplicate_metadata_are_incomplete() {
             .unwrap();
         assert_eq!(report.sessions[0].status, SessionStatus::Incomplete);
         assert!(provider.snapshot_plan(&report.sessions[0]).is_err());
+    }
+}
+
+#[test]
+fn consistent_repeated_metadata_is_accepted_without_changing_primary_identity() {
+    let root = tempdir();
+    let original = include_str!("fixtures/valid.jsonl");
+    let bytes = format!("{original}{original}");
+    let path = write_session(root.path(), ID, &bytes);
+    let provider = CodexProvider::new(root.path().to_owned());
+    let report = provider
+        .discover_sessions(&DiscoveryContext::default())
+        .unwrap();
+    assert_eq!(report.sessions[0].status, SessionStatus::Discovered);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "codex_repeated_metadata")
+    );
+    assert_eq!(
+        provider.snapshot_plan(&report.sessions[0]).unwrap().files[0].expected_sha256,
+        format!("{:x}", Sha256::digest(bytes.as_bytes()))
+    );
+    assert_eq!(fs::read(path).unwrap(), bytes.as_bytes());
+}
+
+#[test]
+fn declared_fork_prefix_preserves_child_identity_and_exact_native_bytes() {
+    let root = tempdir();
+    let child = "11111111-1111-4111-8111-111111111111";
+    let bytes = include_str!("fixtures/forked.jsonl");
+    let path = write_session(root.path(), child, bytes);
+    let provider = CodexProvider::new(root.path().to_owned());
+    let report = provider
+        .discover_sessions(&DiscoveryContext::default())
+        .unwrap();
+    let session = &report.sessions[0];
+    assert_eq!(session.status, SessionStatus::Discovered);
+    assert_eq!(session.provider_session_id.0, child);
+    assert_eq!(
+        session.working_directory.as_deref(),
+        Some(Path::new("/synthetic/child"))
+    );
+    assert_eq!(session.provider_version.as_ref().unwrap().0, "0.154.0");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "codex_fork_ancestry" && d.message.starts_with("Line 2:"))
+    );
+    let plan = provider.snapshot_plan(session).unwrap();
+    assert_eq!(
+        plan.files[0].expected_sha256,
+        format!("{:x}", Sha256::digest(bytes.as_bytes()))
+    );
+    assert_eq!(fs::read(path).unwrap(), bytes.as_bytes());
+}
+
+#[test]
+fn unrelated_late_conflicting_or_cyclic_ancestry_remains_blocked() {
+    let child = "11111111-1111-4111-8111-111111111111";
+    let original = include_str!("fixtures/forked.jsonl");
+    let lines: Vec<_> = original.lines().collect();
+    let variants = [
+        original.replace(
+            "\"forked_from_id\":\"22222222-2222-4222-8222-222222222222\",",
+            "",
+        ),
+        original.replace(
+            "\"parent_thread_id\":\"22222222-2222-4222-8222-222222222222\",",
+            "",
+        ),
+        original
+            .replace(
+                "\"forked_from_id\":\"22222222-2222-4222-8222-222222222222\",",
+                "",
+            )
+            .replace(
+                "\"parent_thread_id\":\"22222222-2222-4222-8222-222222222222\",",
+                "",
+            ),
+        original.replacen(
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+            1,
+        ),
+        format!("{}\n{}\n{}\n", lines[0], lines[2], lines[1]),
+        original.replace(
+            "\"source\":\"cli\"",
+            &format!("\"source\":\"cli\",\"forked_from_id\":\"{child}\""),
+        ),
+        original.replace("/synthetic/parent", "/work/ghp_DO_NOT_ECHO"),
+    ];
+    for contents in variants {
+        let root = tempdir();
+        write_session(root.path(), child, &contents);
+        write_session(root.path(), ID, include_str!("fixtures/valid.jsonl"));
+        let provider = CodexProvider::new(root.path().to_owned());
+        let report = provider
+            .discover_sessions(&DiscoveryContext::default())
+            .unwrap();
+        let session = report
+            .sessions
+            .iter()
+            .find(|s| s.provider_session_id.0 == child)
+            .unwrap();
+        assert_eq!(session.status, SessionStatus::Incomplete);
+        let error = provider.snapshot_plan(session).unwrap_err().to_string();
+        assert!(error.contains("codex_"));
+        assert!(!error.contains("ghp_DO_NOT_ECHO"));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("ghp_DO_NOT_ECHO")
+        );
+        assert!(
+            report
+                .sessions
+                .iter()
+                .any(|s| s.provider_session_id.0 == ID && s.status == SessionStatus::Discovered)
+        );
+    }
+}
+
+#[test]
+fn unsupported_ancestry_version_and_malformed_events_have_specific_reasons() {
+    let root = tempdir();
+    let child = "11111111-1111-4111-8111-111111111111";
+    write_session(
+        root.path(),
+        child,
+        &include_str!("fixtures/forked.jsonl").replace("0.153.2", "999.0.0"),
+    );
+    let provider = CodexProvider::new(root.path().to_owned());
+    let report = provider
+        .discover_sessions(&DiscoveryContext::default())
+        .unwrap();
+    assert_eq!(report.sessions[0].status, SessionStatus::Unknown);
+    assert!(
+        provider
+            .snapshot_plan(&report.sessions[0])
+            .unwrap_err()
+            .to_string()
+            .contains("codex_untested_version: Line 2:")
+    );
+    write_session(
+        root.path(),
+        child,
+        &format!("{}{{broken", include_str!("fixtures/forked.jsonl")),
+    );
+    let report = provider
+        .discover_sessions(&DiscoveryContext::default())
+        .unwrap();
+    let error = provider
+        .snapshot_plan(&report.sessions[0])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("codex_malformed_event: Line 4:"));
+    assert!(error.contains("codex_missing_final_newline: Line 4:"));
+    assert!(!error.contains("{broken"));
+}
+
+#[test]
+fn first_header_failures_keep_specific_diagnostics_without_native_values() {
+    for (bytes, expected_code) in [
+        (include_str!("fixtures/valid.jsonl").replace(ID, "33333333-3333-4333-8333-333333333333"), "codex_identity_mismatch"),
+        ("{\"type\":\"session_meta\",\"payload\":{\"id\":false,\"cwd\":\"DO_NOT_ECHO_THIS_VALUE\"}}\n".into(), "codex_missing_session_metadata"),
+    ] {
+        let root = tempdir();
+        write_session(root.path(), ID, &bytes);
+        let provider = CodexProvider::new(root.path().to_owned());
+        let report = provider.discover_sessions(&DiscoveryContext::default()).unwrap();
+        assert!(report.sessions.is_empty());
+        assert!(report.diagnostics.iter().any(|d| d.code == expected_code));
+        assert!(!serde_json::to_string(&report).unwrap().contains("DO_NOT_ECHO_THIS_VALUE"));
     }
 }
 

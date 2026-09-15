@@ -18,6 +18,8 @@ Core owns the serialized neutral model. Provider-native identifiers remain separ
 | `SnapshotManifest` / `SnapshotId` (`snp_`) | Versioned bundle identity, provenance, objects, selected Git metadata, and limitations. |
 | `SessionVersion` / `SessionVersionId` (`ver_`) | Positive per-session ordinal and corresponding immutable snapshot. |
 | `Snapshot` | Manifest plus registered manifest hash, local directory, and version record. |
+| `BundleReceipt` | Versioned exchange metadata containing the manifest hash and original version record. |
+| `ImportedSnapshot` | Foreign snapshot plus local import time, stored separately from local sessions. |
 | `Diagnostic` | Severity, stable code, static safe description, optional provider/path. |
 
 Prefixed generated IDs use UUIDs. Rediscovery preserves session identity through the unique `(device_id, provider_id, provider_session_id)` key. Conflicting source paths are not silently merged. Snapshot versions never reuse an ordinal within a session; repeated identical captures still create distinct versions.
@@ -36,6 +38,14 @@ Dirty state is currently always unknown (`null`). Git status can execute configu
 
 ## Persistence and portability
 
-SQLite stores devices, providers/installations, projects/mappings, sessions, versions, snapshots/objects, discovery runs, and diagnostics. JSON metadata columns serialize the neutral types alongside relational identity constraints. Schema migration 0001 and SQLite `user_version = 1` define the current database format.
+SQLite stores devices, providers/installations, projects/mappings, sessions, versions, snapshots/objects, discovery runs, diagnostics, and imported snapshots. JSON metadata columns serialize the neutral types alongside relational identity constraints. Migration 0001 defines the original local tables; additive migration 0002 adds the separate import catalog and advances SQLite `user_version` to 2. Existing local records and manifest bytes remain unchanged.
 
 Manifest format 1 excludes local source/root mappings and includes selected Git identity/branch/HEAD/dirty metadata. Relative object names identify native artifacts independent of their original layout. The opaque object bytes are preserved unchanged and can contain provider-specific paths and sensitive content. Manifest portability therefore means stable bundle description, not a validated cross-machine restore contract.
+
+## Exchange identity
+
+An exported directory contains the original `manifest.json`, SHA-256-addressed objects, and `bundle.json`. The independently versioned receipt has `format_version: 1`, `manifest_sha256`, and the original session version record. The original manifest continues to carry the foreign `session_id`, `device_id`, `snapshot_id`, and `version_id`; import does not rewrite them into local identities.
+
+Imported snapshots live in their own catalog rather than the local `sessions` or `session_versions` tables. They can be verified and re-exported by snapshot ID, but do not participate in local provider discovery or native capture. Importing an identical registered ID/content is idempotent; mismatches are conflicts and corrupt existing data is never silently repaired.
+
+An expected manifest hash from a trusted source binds exact manifest bytes and the declared object content. It does not authenticate the separately stored original ordinal, provide signatures or encryption, or establish native provider compatibility. No cross-device project mapping or restore intent is inferred from a foreign manifest.
