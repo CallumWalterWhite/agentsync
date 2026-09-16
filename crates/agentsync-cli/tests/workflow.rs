@@ -1,6 +1,11 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 fn copy_bundle(source: &std::path::Path, destination: &std::path::Path) {
     fs::create_dir_all(destination.join("objects")).unwrap();
@@ -758,4 +763,116 @@ fn encrypted_push_pull_between_machines_preserves_bytes_and_rejects_wrong_keys()
         receiver.json(&["bundle", "list"]).as_array().unwrap().len(),
         1
     );
+}
+
+/// End-to-end proof required by docs/ADR/0009: a real pairing roundtrip
+/// between two isolated stores using the human-relayed code, with no
+/// out-of-band exchange of the relay token or either device's public key.
+#[test]
+fn device_pairing_exchanges_identity_and_relay_token_and_records_peers() {
+    let device_a = Fixture::new();
+    let device_b = Fixture::new();
+    let relay = TestRelay::start(device_a.root.join("relay"));
+    let token = "a".repeat(64);
+    device_a.json(&["identity", "save-token", "--token", &token]);
+    let recipient_a = device_a.json(&["identity", "show"])["age_recipient"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let recipient_b = device_b.json(&["identity", "show"])["age_recipient"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let mut create = device_a
+        .command()
+        .args(["pair", "--server", &relay.url, "--create"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(create.stderr.take().unwrap());
+    let mut announcement = String::new();
+    stderr.read_line(&mut announcement).unwrap();
+    let code = announcement
+        .trim_start_matches("Pairing code: ")
+        .trim()
+        .to_owned();
+    assert_eq!(code.len(), 32);
+
+    let joined = device_b.json(&[
+        "pair", "--server", &relay.url, "--join", &code, "--label", "deviceA",
+    ]);
+    assert_eq!(joined["paired_recipient"], recipient_a);
+
+    let output = create.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(created["paired_recipient"], recipient_b);
+
+    // Device B now holds the relay token without ever being told it directly,
+    // and push --peer resolves the paired recipient from the local registry.
+    let denied = device_b
+        .command()
+        .args(["push", "snp_00000000-0000-4000-8000-000000000000"])
+        .args(["--server", &relay.url, "--peer", "unknown-peer"])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("no paired peer matches"));
+
+    let output = device_b
+        .command()
+        .args(["push", "snp_00000000-0000-4000-8000-000000000000"])
+        .args(["--server", &relay.url, "--peer", "deviceA"])
+        .env_remove("AGENTSYNC_RELAY_TOKEN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("snapshot not found"));
+}
+
+#[test]
+fn joining_a_pairing_with_the_wrong_code_fails_without_saving_a_token() {
+    let device_a = Fixture::new();
+    let device_b = Fixture::new();
+    let relay = TestRelay::start(device_a.root.join("relay"));
+    device_a.json(&["identity", "save-token", "--token", &"a".repeat(64)]);
+
+    let mut create = device_a
+        .command()
+        .args(["pair", "--server", &relay.url, "--create"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(create.stderr.take().unwrap());
+    let mut announcement = String::new();
+    stderr.read_line(&mut announcement).unwrap();
+    let real_code = announcement
+        .trim_start_matches("Pairing code: ")
+        .trim()
+        .to_owned();
+    let wrong_code = format!("{}0", &real_code[..real_code.len() - 1]);
+    assert_ne!(wrong_code, real_code);
+
+    let output = device_b
+        .command()
+        .args(["pair", "--server", &relay.url, "--join", &wrong_code])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&real_code));
+    assert_eq!(
+        device_b.json(&["identity", "show"])["relay_token_saved"],
+        false
+    );
+
+    // Device A is still polling for an ack; stop it rather than wait out the TTL.
+    create.kill().unwrap();
+    let _ = create.wait();
 }

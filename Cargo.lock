@@ -61,14 +61,17 @@ version = "0.1.0"
 dependencies = [
  "age",
  "agentsync-core",
+ "agentsync-crypto",
  "agentsync-provider-api",
  "agentsync-provider-claude",
  "agentsync-provider-codex",
  "agentsync-server",
  "agentsync-storage",
  "agentsync-sync-client",
+ "agentsync-sync-protocol",
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "serde",
  "serde_json",
@@ -191,6 +194,7 @@ name = "agentsync-sync-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "sha2 0.10.9",
 ]
 

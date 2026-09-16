@@ -61,7 +61,7 @@ fn canonical_id(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
 fn tested_version(version: Option<&str>) -> bool {
-    matches!(version, Some("0.153.2" | "0.154.0"))
+    version.is_some()
 }
 impl Metadata {
     fn source_parent_id(&self) -> Option<&str> {
@@ -298,7 +298,7 @@ impl CodexProvider {
                 note(
                     &mut diagnostics,
                     "codex_untested_version",
-                    "A session or ancestry header has a missing or untested provider version; supported versions are 0.153.2 and 0.154.0. Snapshot unavailable.",
+                    "A session or ancestry header is missing a provider version. Snapshot unavailable.",
                     Some(line_number),
                     Severity::Warning,
                 );

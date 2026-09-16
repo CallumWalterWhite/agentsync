@@ -62,6 +62,10 @@ pub enum SessionStatus {
 pub struct Device {
     pub id: DeviceId,
     pub created_at: DateTime<Utc>,
+    /// This device's public age recipient, once an identity has been generated.
+    /// Never the private key; see docs/ADR/0009-device-pairing-and-mailbox-relay.md.
+    #[serde(default)]
+    pub age_recipient: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +249,17 @@ pub struct BundleReceipt {
 pub struct ImportedSnapshot {
     pub snapshot: Snapshot,
     pub imported_at: DateTime<Utc>,
+}
+
+/// A paired peer device (docs/ADR/0009-device-pairing-and-mailbox-relay.md).
+/// Public data only: a recipient and an optional label, never a secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Peer {
+    /// sha256 of `age_recipient`; computed by callers via agentsync-sync-protocol.
+    pub recipient_id: String,
+    pub age_recipient: String,
+    pub label: Option<String>,
+    pub paired_at: DateTime<Utc>,
 }
 
 /// Metadata operations used by application orchestration. Implementations own migrations/transactions.

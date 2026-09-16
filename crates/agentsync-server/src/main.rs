@@ -15,10 +15,8 @@ struct Args {
 async fn main() -> std::process::ExitCode {
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(_) => {
-            eprintln!(
-                "AgentSync relay: startup or serving failed. Check loopback bind, private relay directory and AGENTSYNC_RELAY_TOKEN (64 lowercase hex characters)."
-            );
+        Err(err) => {
+            eprintln!("AgentSync relay: startup or serving failed: {err:#}");
             std::process::ExitCode::FAILURE
         }
     }

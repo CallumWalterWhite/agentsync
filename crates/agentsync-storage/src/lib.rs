@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -108,7 +108,7 @@ impl Store {
                 transaction.pragma_update(None, "user_version", 1)?;
                 transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
             }
-            1 | 2 => (),
+            1..=3 => (),
             _ => {
                 return Err(StorageError::Invalid(
                     "database schema is newer than supported".into(),
@@ -119,9 +119,14 @@ impl Store {
             transaction.execute_batch(include_str!("../migrations/0002_imported_snapshots.sql"))?;
             transaction.pragma_update(None, "user_version", 2)?;
         }
+        if version < 3 {
+            transaction.execute_batch(include_str!("../migrations/0003_peers.sql"))?;
+            transaction.pragma_update(None, "user_version", 3)?;
+        }
         let device = Device {
             id: DeviceId::new(),
             created_at: Utc::now(),
+            age_recipient: None,
         };
         transaction.execute(
             "INSERT OR IGNORE INTO devices(id, singleton, metadata_json) VALUES (?1, 1, ?2)",
@@ -134,6 +139,98 @@ impl Store {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Persists an opaque identity/pairing blob at `config/identity.json`, mode 0600.
+    /// Storage stays agnostic of the blob's shape; see docs/ADR/0009 for what the
+    /// CLI is authorized to put in it (this device's relay token and age identity).
+    pub fn save_identity_blob(&self, bytes: &[u8]) -> Result<()> {
+        let destination = self.root.join("config").join("identity.json");
+        let mut temp = tempfile::NamedTempFile::new_in(self.root.join("config"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        temp.write_all(bytes)?;
+        temp.as_file().sync_all()?;
+        temp.persist(&destination)
+            .map_err(|error| StorageError::Io(error.error))?;
+        Ok(())
+    }
+
+    /// Reads the identity/pairing blob written by [`Store::save_identity_blob`], if any.
+    pub fn load_identity_blob(&self) -> Result<Option<Vec<u8>>> {
+        let path = self.root.join("config").join("identity.json");
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(StorageError::Invalid("invalid identity file".into()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.nlink() != 1 {
+                return Err(StorageError::Invalid(
+                    "linked identity file rejected".into(),
+                ));
+            }
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(Some(bytes))
+    }
+
+    /// Records this device's own public age recipient once an identity has been generated.
+    pub fn set_device_recipient(&mut self, age_recipient: &str) -> Result<()> {
+        let mut device = self.device()?;
+        device.age_recipient = Some(age_recipient.to_string());
+        self.connection.execute(
+            "UPDATE devices SET metadata_json=?1 WHERE singleton=1",
+            params![serde_json::to_string(&device)?],
+        )?;
+        Ok(())
+    }
+
+    /// Records or updates a paired peer, keyed by its recipient id.
+    pub fn record_peer(&mut self, peer: Peer) -> Result<()> {
+        if !valid_hash(&peer.recipient_id) {
+            return Err(StorageError::Invalid("invalid peer recipient id".into()));
+        }
+        self.connection.execute(
+            "INSERT INTO peers(recipient_id, metadata_json) VALUES (?1, ?2) ON CONFLICT(recipient_id) DO UPDATE SET metadata_json=excluded.metadata_json",
+            params![peer.recipient_id, serde_json::to_string(&peer)?],
+        )?;
+        Ok(())
+    }
+
+    /// All paired peers, most recently paired first.
+    pub fn peers(&self) -> Result<Vec<Peer>> {
+        query_json(
+            &self.connection,
+            "SELECT metadata_json FROM peers ORDER BY rowid DESC",
+            [],
+        )
+    }
+
+    /// Looks up a peer by recipient id or label, for `push --peer`.
+    pub fn peer(&self, recipient_id_or_label: &str) -> Result<Option<Peer>> {
+        Ok(self.peers()?.into_iter().find(|p| {
+            p.recipient_id == recipient_id_or_label
+                || p.label.as_deref() == Some(recipient_id_or_label)
+        }))
     }
 
     /// Read-only SQLite structural and foreign-key checks for the doctor command.
@@ -728,7 +825,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         drop(store);
         let reopened = Store::open(&root).unwrap();
         reopened.health_check().unwrap();
@@ -776,7 +873,9 @@ mod tests {
         // Remove only the additive schema in this isolated fixture to recreate version 1.
         store
             .connection
-            .execute_batch("DROP TABLE imported_snapshots; PRAGMA user_version=1;")
+            .execute_batch(
+                "DROP TABLE imported_snapshots; DROP TABLE peers; PRAGMA user_version=1;",
+            )
             .unwrap();
         fs::remove_dir(root.join("imports")).unwrap();
         drop(store);
@@ -1030,6 +1129,94 @@ mod tests {
                 .mode()
                 & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn identity_blob_persists_across_reopen_with_private_permissions() {
+        let (_temp, store) = fixture_store();
+        assert!(store.load_identity_blob().unwrap().is_none());
+        store
+            .save_identity_blob(b"{\"relay_token\":\"secret\"}")
+            .unwrap();
+        assert_eq!(
+            store.load_identity_blob().unwrap().unwrap(),
+            b"{\"relay_token\":\"secret\"}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(store.root().join("config").join("identity.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let root = store.root().to_owned();
+        drop(store);
+        let reopened = Store::open(&root).unwrap();
+        assert_eq!(
+            reopened.load_identity_blob().unwrap().unwrap(),
+            b"{\"relay_token\":\"secret\"}"
+        );
+    }
+
+    #[test]
+    fn device_recipient_round_trips_and_defaults_to_none() {
+        let (_temp, mut store) = fixture_store();
+        assert!(store.device().unwrap().age_recipient.is_none());
+        store.set_device_recipient("age1synthetic").unwrap();
+        assert_eq!(
+            store.device().unwrap().age_recipient.as_deref(),
+            Some("age1synthetic")
+        );
+    }
+
+    #[test]
+    fn peers_are_recorded_updated_and_looked_up_by_id_or_label() {
+        let (_temp, mut store) = fixture_store();
+        assert!(store.peers().unwrap().is_empty());
+        let peer = Peer {
+            recipient_id: "a".repeat(64),
+            age_recipient: "age1synthetic".into(),
+            label: Some("laptop".into()),
+            paired_at: Utc::now(),
+        };
+        store.record_peer(peer.clone()).unwrap();
+        assert_eq!(store.peers().unwrap().len(), 1);
+        assert_eq!(
+            store.peer("laptop").unwrap().unwrap().recipient_id,
+            peer.recipient_id
+        );
+        assert_eq!(
+            store.peer(&peer.recipient_id).unwrap().unwrap().label,
+            peer.label
+        );
+        assert!(store.peer("unknown").unwrap().is_none());
+
+        // Re-recording the same recipient id updates rather than duplicates.
+        let renamed = Peer {
+            label: Some("desktop".into()),
+            ..peer.clone()
+        };
+        store.record_peer(renamed).unwrap();
+        assert_eq!(store.peers().unwrap().len(), 1);
+        assert!(store.peer("laptop").unwrap().is_none());
+        assert_eq!(
+            store.peer("desktop").unwrap().unwrap().recipient_id,
+            peer.recipient_id
+        );
+
+        assert!(
+            store
+                .record_peer(Peer {
+                    recipient_id: "not-a-hash".into(),
+                    ..peer
+                })
+                .is_err()
         );
     }
 }

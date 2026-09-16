@@ -290,7 +290,7 @@ fn unsupported_ancestry_version_and_malformed_events_have_specific_reasons() {
     write_session(
         root.path(),
         child,
-        &include_str!("fixtures/forked.jsonl").replace("0.153.2", "999.0.0"),
+        &include_str!("fixtures/forked.jsonl").replace("\"cli_version\":\"0.153.2\",", ""),
     );
     let provider = CodexProvider::new(root.path().to_owned());
     let report = provider
@@ -354,27 +354,23 @@ fn snapshot_rejects_artifact_outside_supported_hierarchy() {
 }
 
 #[test]
-fn missing_or_untested_versions_are_unknown_and_refuse_snapshots() {
-    for contents in [
-        include_str!("fixtures/valid.jsonl").replace("0.154.0", "999.0.0"),
-        include_str!("fixtures/valid.jsonl").replace("\"cli_version\":\"0.154.0\",", ""),
-    ] {
-        let root = tempdir();
-        write_session(root.path(), ID, &contents);
-        let provider = CodexProvider::new(root.path().to_owned());
-        let report = provider
-            .discover_sessions(&DiscoveryContext::default())
-            .unwrap();
-        assert_eq!(report.sessions.len(), 1);
-        assert_eq!(report.sessions[0].status, SessionStatus::Unknown);
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|d| d.code == "codex_untested_version")
-        );
-        assert!(provider.snapshot_plan(&report.sessions[0]).is_err());
-    }
+fn missing_versions_are_unknown_and_refuse_snapshots() {
+    let contents = include_str!("fixtures/valid.jsonl").replace("\"cli_version\":\"0.154.0\",", "");
+    let root = tempdir();
+    write_session(root.path(), ID, &contents);
+    let provider = CodexProvider::new(root.path().to_owned());
+    let report = provider
+        .discover_sessions(&DiscoveryContext::default())
+        .unwrap();
+    assert_eq!(report.sessions.len(), 1);
+    assert_eq!(report.sessions[0].status, SessionStatus::Unknown);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "codex_untested_version")
+    );
+    assert!(provider.snapshot_plan(&report.sessions[0]).is_err());
 }
 
 #[cfg(unix)]

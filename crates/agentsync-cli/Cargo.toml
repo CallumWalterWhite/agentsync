@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 agentsync-sync-client.workspace = true
+agentsync-sync-protocol.workspace = true
+agentsync-crypto.workspace = true
 tempfile.workspace = true
 agentsync-core.workspace = true
 agentsync-provider-api.workspace = true
@@ -19,6 +21,7 @@ agentsync-provider-codex.workspace = true
 agentsync-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 tracing.workspace = true

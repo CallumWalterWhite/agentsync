@@ -11,5 +11,5 @@
 - Every provider adapter needs synthetic fixtures, absence tests, malformed-input tests, and compatibility documentation. Tests must never inspect the developer's home.
 - Git inspection must not execute hooks, filters, credential helpers, automatic checkout, or optional index writes.
 - Do not add cloud, restore, daemon, or account infrastructure to Phase 1. Phase 2 permits the explicitly authorized encrypted relay and manual push/pull described in docs/ADR/0008-encrypted-relay-basics.md; it does not authorize provider writes.
-- Relay access tokens and age identities may be injected at runtime only. Never persist or log them; never reuse or synchronize provider credentials.
+- Relay access tokens and age identities may be injected at runtime only, or persisted exactly as authorized by docs/ADR/0009-device-pairing-and-mailbox-relay.md (a device's own token/identity, at `~/.agentsync/config/identity.json`, mode 0600, never logged or exported except by an explicit command). Never persist or log any other credential; never reuse or synchronize provider credentials.
 - Run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` before handoff.

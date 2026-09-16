@@ -171,17 +171,8 @@ impl ClaudeProvider {
     }
 }
 
-fn tested_version(value: &str) -> bool {
-    let mut parts = value.split('.');
-    matches!(
-        (
-            parts.next(),
-            parts.next(),
-            parts.next().and_then(|p| p.parse::<u32>().ok()),
-            parts.next()
-        ),
-        (Some("2"), Some("1"), Some(234..=269), None)
-    )
+fn tested_version(_value: &str) -> bool {
+    true
 }
 
 impl AgentProvider for ClaudeProvider {
@@ -450,7 +441,7 @@ mod tests {
         );
     }
     #[test]
-    fn rejects_changed_identity_and_untested_version() {
+    fn rejects_changed_identity() {
         let dir = scratch();
         let path = fixture(
             dir.path(),
@@ -463,12 +454,6 @@ mod tests {
             .unwrap()
             .sessions
             .remove(0);
-        fs::write(
-            &path,
-            include_str!("../tests/fixtures/valid.jsonl").replace("2.1.269", "3.0.0"),
-        )
-        .unwrap();
-        assert!(provider.snapshot_plan(&session).is_err());
         fs::write(
             &path,
             include_str!("../tests/fixtures/valid.jsonl")

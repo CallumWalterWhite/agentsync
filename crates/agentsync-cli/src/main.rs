@@ -6,8 +6,9 @@ use agentsync_provider_claude::ClaudeProvider;
 use agentsync_provider_codex::CodexProvider;
 use agentsync_storage::{Store, bundle, snapshot};
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::OpenOptions,
@@ -43,14 +44,37 @@ enum Command {
         #[arg(long)]
         server: String,
         /// Destination machine's public age recipient (age1...).
-        #[arg(long)]
-        recipient: String,
+        #[arg(long, conflicts_with = "peer")]
+        recipient: Option<String>,
+        /// Destination device from the local peer registry (see agentsync pair), by label or recipient id.
+        #[arg(long, conflicts_with = "recipient")]
+        peer: Option<String>,
     },
     /// Download a sender-pinned transfer, decrypt and import into AgentSync.
     Pull {
         transfer_sha256: String,
         #[arg(long)]
         server: String,
+    },
+    /// Manage this device's persisted relay identity (docs/ADR/0009).
+    Identity {
+        #[command(subcommand)]
+        command: IdentityCommand,
+    },
+    /// Pair with another device through the relay, exchanging identities and
+    /// the shared relay token without an out-of-band copy-paste.
+    Pair {
+        #[arg(long)]
+        server: String,
+        /// Create a new pairing and display a code for the other device.
+        #[arg(long, conflicts_with = "join")]
+        create: bool,
+        /// Join a pairing created on another device using its code.
+        #[arg(long, conflicts_with = "create")]
+        join: Option<String>,
+        /// Remember the paired device under this label.
+        #[arg(long)]
+        label: Option<String>,
     },
     Doctor,
     Providers,
@@ -78,6 +102,18 @@ enum Command {
     Bundle {
         #[command(subcommand)]
         command: BundleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCommand {
+    /// Print this device's public age recipient, generating one on first use.
+    /// The relay token, if saved, is never printed.
+    Show,
+    /// Persist a relay token for this device, alongside its age identity.
+    SaveToken {
+        #[arg(long)]
+        token: String,
     },
 }
 
@@ -470,6 +506,171 @@ fn mark(value: bool) -> &'static str {
     if value { "✓" } else { "✗" }
 }
 
+/// Persisted per docs/ADR/0009-device-pairing-and-mailbox-relay.md: this device's
+/// own relay token and age identity only. Never provider credentials.
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedIdentity {
+    age_identity: Option<String>,
+    age_recipient: Option<String>,
+    relay_token: Option<String>,
+}
+
+fn load_persisted_identity(store: &Store) -> Result<PersistedIdentity> {
+    Ok(match store.load_identity_blob()? {
+        Some(bytes) => serde_json::from_slice(&bytes)?,
+        None => PersistedIdentity::default(),
+    })
+}
+
+fn save_persisted_identity(store: &Store, identity: &PersistedIdentity) -> Result<()> {
+    store.save_identity_blob(&serde_json::to_vec(identity)?)?;
+    Ok(())
+}
+
+/// Generates this device's age identity on first use; a no-op if one already exists.
+fn ensure_identity(store: &mut Store) -> Result<PersistedIdentity> {
+    let mut identity = load_persisted_identity(store)?;
+    if identity.age_identity.is_none() {
+        let (secret, recipient) = agentsync_crypto::generate_identity();
+        identity.age_identity = Some(secret);
+        identity.age_recipient = Some(recipient.clone());
+        save_persisted_identity(store, &identity)?;
+        store.set_device_recipient(&recipient)?;
+    }
+    Ok(identity)
+}
+
+/// Relay token: explicit env var first (unbroken CI/scripted path), else this
+/// device's persisted token.
+fn resolve_relay_token(store: &Store) -> Result<String> {
+    if let Ok(token) = std::env::var("AGENTSYNC_RELAY_TOKEN") {
+        return Ok(token);
+    }
+    load_persisted_identity(store)?
+        .relay_token
+        .context("set AGENTSYNC_RELAY_TOKEN, or run agentsync identity save-token")
+}
+
+/// This device's own age identity: explicit env var first, else the persisted one.
+fn resolve_age_identity(store: &Store) -> Result<String> {
+    if let Ok(identity) = std::env::var("AGENTSYNC_AGE_IDENTITY") {
+        return Ok(identity);
+    }
+    load_persisted_identity(store)?
+        .age_identity
+        .context("set AGENTSYNC_AGE_IDENTITY, or run agentsync identity show to generate one")
+}
+
+/// 128 bits from a UUID v4's random bytes, hex-encoded: the one secret that
+/// must cross a trusted (human-relayed) channel. See docs/ADR/0009.
+fn generate_pairing_secret() -> String {
+    uuid::Uuid::new_v4()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+const PAIRING_ACK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Creates a one-time pairing, displays its code, and polls the relay for
+/// the joining device's ack until it appears or the pairing expires.
+fn pair_create(store: &mut Store, server: &str, label: Option<String>, json: bool) -> Result<()> {
+    let identity = ensure_identity(store)?;
+    let age_recipient = identity
+        .age_recipient
+        .context("identity generation failed")?;
+    let token = resolve_relay_token(store)
+        .context("save a relay token first: agentsync identity save-token")?;
+    let secret = generate_pairing_secret();
+    let pairing_id = agentsync_sync_protocol::pairing_id(&secret);
+    let bundle = agentsync_sync_protocol::PairingBundle {
+        protocol_version: 1,
+        age_recipient,
+        relay_token: token.clone(),
+    };
+    let plaintext = serde_json::to_vec(&bundle)?;
+    let encrypted = agentsync_crypto::encrypt_with_passphrase(&plaintext, &secret)?;
+    let client = agentsync_sync_client::RelayClient::new(server, &token)?;
+    client.pair_put(&pairing_id, encrypted)?;
+    // Always to stderr, regardless of --json: the human relaying this code
+    // needs it whether or not the final result is machine-readable. Flushed
+    // explicitly since stdout/stderr sit in a full buffer (not line-buffered)
+    // once redirected, piped, or captured by another process.
+    eprintln!(
+        "Pairing code: {secret}\nEnter it on the other device: agentsync pair --server {server} --join {secret}\nWaiting up to {} minutes for that device to join...",
+        agentsync_sync_protocol::PAIRING_TTL_SECONDS / 60
+    );
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(agentsync_sync_protocol::PAIRING_TTL_SECONDS);
+    while std::time::Instant::now() < deadline {
+        if let Some(bytes) = client.ack_get(&pairing_id)? {
+            let ack: agentsync_sync_protocol::PairingAck = serde_json::from_slice(&bytes)
+                .context("relay returned an invalid pairing acknowledgement")?;
+            let peer = Peer {
+                recipient_id: agentsync_sync_protocol::recipient_id(&ack.age_recipient),
+                age_recipient: ack.age_recipient.clone(),
+                label,
+                paired_at: Utc::now(),
+            };
+            store.record_peer(peer)?;
+            if json {
+                print_json(&serde_json::json!({"paired_recipient": ack.age_recipient}))?;
+            } else {
+                println!("Paired with {}", ack.age_recipient);
+            }
+            return Ok(());
+        }
+        std::thread::sleep(PAIRING_ACK_POLL_INTERVAL);
+    }
+    bail!("no device joined this pairing before it expired; run agentsync pair --create again")
+}
+
+/// Joins a pairing created on another device: fetches its one-time bundle
+/// (unauthenticated - only the code is needed), persists the relay token it
+/// carries, and acknowledges with this device's own public recipient.
+fn pair_join(
+    store: &mut Store,
+    server: &str,
+    code: &str,
+    label: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let pairing_id = agentsync_sync_protocol::pairing_id(code);
+    let encrypted = agentsync_sync_client::fetch_pairing_bundle(server, &pairing_id)?;
+    let plaintext = agentsync_crypto::decrypt_with_passphrase(&encrypted, code)
+        .context("wrong or expired pairing code")?;
+    let bundle: agentsync_sync_protocol::PairingBundle =
+        serde_json::from_slice(&plaintext).context("relay returned an invalid pairing bundle")?;
+    let mut identity = ensure_identity(store)?;
+    let own_recipient = identity
+        .age_recipient
+        .clone()
+        .context("identity generation failed")?;
+    identity.relay_token = Some(bundle.relay_token.clone());
+    save_persisted_identity(store, &identity)?;
+    let client = agentsync_sync_client::RelayClient::new(server, &bundle.relay_token)?;
+    let ack = agentsync_sync_protocol::PairingAck {
+        protocol_version: 1,
+        age_recipient: own_recipient,
+    };
+    client.ack_put(&pairing_id, serde_json::to_vec(&ack)?)?;
+    let peer = Peer {
+        recipient_id: agentsync_sync_protocol::recipient_id(&bundle.age_recipient),
+        age_recipient: bundle.age_recipient.clone(),
+        label,
+        paired_at: Utc::now(),
+    };
+    store.record_peer(peer)?;
+    if json {
+        print_json(&serde_json::json!({"paired_recipient": bundle.age_recipient}))?;
+    } else {
+        println!("Paired. Relay token saved.\nPeer: {}", bundle.age_recipient);
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<()> {
     let env = environment(&cli)?;
     if matches!(cli.command, Command::Doctor) {
@@ -481,9 +682,20 @@ fn run(cli: Cli) -> Result<()> {
             snapshot_id: value,
             server,
             recipient,
+            peer,
         } => {
-            let token = std::env::var("AGENTSYNC_RELAY_TOKEN")
-                .map_err(|_| anyhow::anyhow!("set AGENTSYNC_RELAY_TOKEN for relay access"))?;
+            let recipient = match (recipient, peer) {
+                (Some(recipient), None) => recipient,
+                (None, Some(peer)) => {
+                    store
+                        .peer(&peer)?
+                        .with_context(|| format!("no paired peer matches '{peer}'"))?
+                        .age_recipient
+                }
+                (None, None) => bail!("specify --recipient or --peer"),
+                (Some(_), Some(_)) => unreachable!("clap enforces --recipient/--peer exclusivity"),
+            };
+            let token = resolve_relay_token(&store)?;
             let client = agentsync_sync_client::RelayClient::new(&server, &token)?;
             let id = snapshot_id(&value)?;
             let selected = match store.snapshot(&id)? {
@@ -512,13 +724,8 @@ fn run(cli: Cli) -> Result<()> {
             transfer_sha256,
             server,
         } => {
-            let token = std::env::var("AGENTSYNC_RELAY_TOKEN")
-                .map_err(|_| anyhow::anyhow!("set AGENTSYNC_RELAY_TOKEN for relay access"))?;
-            let identity = std::env::var("AGENTSYNC_AGE_IDENTITY").map_err(|_| {
-                anyhow::anyhow!(
-                    "set AGENTSYNC_AGE_IDENTITY to the receiving machine's age identity"
-                )
-            })?;
+            let token = resolve_relay_token(&store)?;
+            let identity = resolve_age_identity(&store)?;
             let client = agentsync_sync_client::RelayClient::new(&server, &token)?;
             let encrypted = client.pull(&transfer_sha256)?;
             let archive = agentsync_sync_client::decrypt(&encrypted, &identity)?;
@@ -533,6 +740,49 @@ fn run(cli: Cli) -> Result<()> {
                 println!(
                     "Stored in AgentSync. Native provider session restore is not implemented."
                 );
+            }
+        }
+        Command::Identity { command } => match command {
+            IdentityCommand::Show => {
+                let identity = ensure_identity(&mut store)?;
+                let recipient = identity
+                    .age_recipient
+                    .context("identity generation failed")?;
+                if cli.json {
+                    print_json(&serde_json::json!({
+                        "age_recipient": recipient,
+                        "relay_token_saved": identity.relay_token.is_some(),
+                    }))?;
+                } else {
+                    println!(
+                        "Public recipient: {recipient}\nRelay token saved: {}",
+                        mark(identity.relay_token.is_some())
+                    );
+                }
+            }
+            IdentityCommand::SaveToken { token } => {
+                let mut identity = ensure_identity(&mut store)?;
+                identity.relay_token = Some(token);
+                save_persisted_identity(&store, &identity)?;
+                if cli.json {
+                    print_json(&serde_json::json!({"relay_token_saved": true}))?;
+                } else {
+                    println!("Relay token saved for this device.");
+                }
+            }
+        },
+        Command::Pair {
+            server,
+            create,
+            join,
+            label,
+        } => {
+            if create {
+                pair_create(&mut store, &server, label, cli.json)?;
+            } else if let Some(code) = join {
+                pair_join(&mut store, &server, &code, label, cli.json)?;
+            } else {
+                bail!("specify --create or --join <code>");
             }
         }
         Command::Init => {
