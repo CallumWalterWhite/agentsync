@@ -37,6 +37,49 @@ pub trait AgentProvider {
     fn detect(&self) -> Result<ProviderInstallation>;
     fn discover_sessions(&self, context: &DiscoveryContext) -> Result<DiscoveryReport>;
     fn snapshot_plan(&self, session: &DiscoveredSession) -> Result<SnapshotPlan>;
+    /// Revalidate immutable artifacts; imported claims never grant native-write authority.
+    fn build_native_bundle(&self, _snapshot: &Snapshot) -> Result<NativeSessionBundle> {
+        Err(ProviderError::Unsafe(
+            "native bundle capability is unavailable; ArchiveOnly".into(),
+        ))
+    }
+    fn validate_bundle(&self, _snapshot: &Snapshot, _bundle: &NativeSessionBundle) -> Result<()> {
+        Err(ProviderError::Unsafe(
+            "native bundle validation capability is unavailable".into(),
+        ))
+    }
+    fn compatibility(
+        &self,
+        _snapshot: &Snapshot,
+        _target_version: &ProviderVersion,
+        _target_platform: &Platform,
+    ) -> Result<CompatibilityResult> {
+        Err(ProviderError::Unsafe(
+            "native compatibility capability is unavailable; Unsupported".into(),
+        ))
+    }
+    fn plan_materialization(
+        &self,
+        _snapshot: &Snapshot,
+        _target_version: &ProviderVersion,
+        _target_platform: &Platform,
+        _workspace: &Path,
+        _git: &GitState,
+    ) -> Result<MaterializationPlan> {
+        Err(ProviderError::Unsafe(
+            "native materialization capability is unavailable; Unsupported".into(),
+        ))
+    }
+    /// Recompute compatibility and all preconditions; never trust a caller-supplied plan.
+    fn materialize(
+        &self,
+        _snapshot: &Snapshot,
+        _plan: &MaterializationPlan,
+    ) -> Result<MaterializedSession> {
+        Err(ProviderError::Unsafe(
+            "native materialization is not certified; no provider state changed".into(),
+        ))
+    }
 }
 
 /// Lookup only: never execute a provider binary, which might initialize user state.

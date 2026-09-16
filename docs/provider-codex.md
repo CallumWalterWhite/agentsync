@@ -95,3 +95,17 @@ excerpts, parent IDs, or raw parser errors.
 `agentsync sessions show <id>` includes matching reasons from the latest saved
 discovery. Run `agentsync discover` to refresh them. Snapshot attempts independently
 revalidate the source and report fresh reasons; they do not rely on stale status.
+
+## Resumability and native materialization (target)
+
+See [ADR 0010](ADR/0010-native-session-materialization.md) for the concepts referenced here.
+
+- **Current capture coverage:** the primary rollout JSONL only (`sessions/<uuid>.jsonl`), versions 0.153.2 and 0.154.0, including a validated initial child/parent ancestry prefix when present.
+- **Current exclusions:** `history.jsonl`, `session_index.jsonl`, provider SQLite databases and their WAL/SHM files, caches, memories, shell snapshots, plugins, indexes, `version.json`, archived/related session files beyond the accepted ancestry prefix.
+- **Known required state for resume:** not established. No investigation has yet been done against a real `codex resume` invocation to determine what it actually reads.
+- **Unknown state:** whether `session_index.jsonl` or the SQLite database must reflect a materialized rollout before Codex will discover it; whether related/forked session files beyond the accepted ancestry prefix are load-bearing for resume; whether resume behaves differently when the working directory differs from the one recorded in `session_meta`.
+- **Authentication exclusions:** auth files and generic configuration are never opened, captured, or would ever be restored (`AGENTS.md`).
+- **Current resumability level:** `ArchiveOnly`. No certification work has started. This is the proposed first certification target (see `STATUS.md`'s Codex → Codex restore milestone) precisely because capture coverage here is already the most investigated of the two adapters.
+- **Tested provider versions:** capture tested against synthetic fixtures matching observed real rollouts at 0.153.2 and 0.154.0.
+- **Target materialization approach:** unspecified pending investigation into `session_index.jsonl`/database consistency requirements. Any future `validate`/`materialize`/`verify` implementation stays entirely inside this adapter, per [ADR 0010](ADR/0010-native-session-materialization.md), tested against isolated temporary Codex homes, never a real `~/.codex`.
+- **Risks / open questions:** see `STATUS.md`'s "Next milestone: Codex → Codex certified restore" section for the full open-question list (index rebuild, path remapping, session ID collision, active-process conflict, rollback, verification).

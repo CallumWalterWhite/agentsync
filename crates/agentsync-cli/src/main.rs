@@ -80,6 +80,9 @@ enum Command {
     Providers,
     Projects,
     Sessions {
+        /// List received snapshots with source session IDs; never implies native installation.
+        #[arg(long)]
+        imported: bool,
         #[command(flatten)]
         filter: SessionFilter,
         #[command(subcommand)]
@@ -91,6 +94,27 @@ enum Command {
         /// Allow conservative keyword-reference matches. Credential-like markers remain blocked.
         #[arg(long)]
         force: bool,
+    },
+    /// Evaluate a local or received snapshot against an exact target tuple (read-only).
+    Compatibility {
+        /// AgentSync snapshot ID or session ID (latest unambiguous snapshot).
+        id: String,
+        #[arg(long)]
+        target_version: String,
+        #[arg(long)]
+        target_os: Option<String>,
+        #[arg(long)]
+        target_arch: Option<String>,
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Plan native installation; currently fails closed because no tuple is certified.
+    Materialize {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        target_version: String,
     },
     Snapshots {
         session_id: String,
@@ -256,6 +280,47 @@ fn snapshot_id(value: &str) -> Result<SnapshotId> {
         bail!("invalid AgentSync snapshot ID");
     }
     Ok(SnapshotId(value.into()))
+}
+
+fn select_snapshot(store: &Store, value: &str) -> Result<Snapshot> {
+    if value.starts_with("snp_") {
+        let id = snapshot_id(value)?;
+        return store
+            .snapshot(&id)?
+            .or(store.imported_snapshot(&id)?.map(|i| i.snapshot))
+            .context("snapshot not found");
+    }
+    let id = session_id(value)?;
+    let mut candidates = store.snapshots(&id)?;
+    candidates.extend(
+        store
+            .imported_snapshots()?
+            .into_iter()
+            .map(|i| i.snapshot)
+            .filter(|s| s.manifest.session_id == id),
+    );
+    candidates.sort_by_key(|s| std::cmp::Reverse(s.version.ordinal));
+    let selected = candidates
+        .first()
+        .context("no captured or received snapshot for session")?;
+    if candidates.iter().skip(1).any(|s| {
+        s.version.ordinal == selected.version.ordinal
+            && s.manifest.snapshot_id != selected.manifest.snapshot_id
+    }) {
+        bail!("latest snapshot is ambiguous; specify an exact snapshot ID");
+    }
+    Ok(selected.clone())
+}
+
+fn native_assessment(provider: &dyn AgentProvider, captured: &Snapshot) -> serde_json::Value {
+    match provider.build_native_bundle(captured) {
+        Ok(bundle) => {
+            serde_json::json!({"status": ResumabilityStatus::Candidate, "bundle": bundle})
+        }
+        Err(error) => {
+            serde_json::json!({"status": ResumabilityStatus::ArchiveOnly, "reason": error.to_string()})
+        }
+    }
 }
 
 fn collect(providers: &[Box<dyn AgentProvider>]) -> (Vec<ProviderInstallation>, DiscoveryReport) {
@@ -734,11 +799,14 @@ fn run(cli: Cli) -> Result<()> {
                 print_json(&imported)?;
             } else {
                 println!(
-                    "Imported {}\nSource device: {}",
-                    imported.snapshot.manifest.snapshot_id, imported.snapshot.manifest.device_id
+                    "Imported {}\nSource device: {}\nSession: {}\nNative ID: {}",
+                    imported.snapshot.manifest.snapshot_id,
+                    imported.snapshot.manifest.device_id,
+                    imported.snapshot.manifest.session_id,
+                    imported.snapshot.manifest.provider_session_id.0
                 );
                 println!(
-                    "Stored in AgentSync. Native provider session restore is not implemented."
+                    "Bundle received. Run agentsync compatibility <snapshot-id> --target-version <version>. Native materialization remains certification-blocked."
                 );
             }
         }
@@ -830,7 +898,11 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::Sessions { filter, command } => match command {
+        Command::Sessions {
+            filter,
+            command,
+            imported,
+        } => match command {
             Some(SessionCommand::Show { id }) => {
                 let session = store
                     .session(&session_id(&id)?)?
@@ -881,6 +953,41 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
             _ => {
+                if imported {
+                    let received: Vec<_> = store
+                        .imported_snapshots()?
+                        .into_iter()
+                        .filter(|s| {
+                            filter
+                                .provider
+                                .as_ref()
+                                .is_none_or(|p| s.snapshot.manifest.provider.0 == *p)
+                                && filter.project.as_ref().is_none_or(|p| {
+                                    s.snapshot
+                                        .manifest
+                                        .git
+                                        .as_ref()
+                                        .is_some_and(|g| g.identity.key() == *p)
+                                })
+                        })
+                        .collect();
+                    if cli.json {
+                        print_json(&received)?;
+                    } else {
+                        for s in &received {
+                            let m = &s.snapshot.manifest;
+                            println!(
+                                "{}  {}  {}  native={}  received; not materialized",
+                                m.session_id, m.snapshot_id, m.provider, m.provider_session_id.0
+                            );
+                        }
+                        println!(
+                            "{} received snapshot(s); hashes not checked",
+                            received.len()
+                        );
+                    }
+                    return Ok(());
+                }
                 let sessions: Vec<_> = store
                     .sessions()?
                     .into_iter()
@@ -964,8 +1071,11 @@ fn run(cli: Cli) -> Result<()> {
                 snapshot::SensitiveContentPolicy::Strict
             };
             let captured = snapshot::capture_with_policy(&mut store, &session, plan, policy)?;
+            let native = native_assessment(provider.as_ref(), &captured);
             if cli.json {
-                print_json(&captured)?;
+                let mut output = serde_json::to_value(&captured)?;
+                output["native"] = native;
+                print_json(&output)?;
             } else {
                 println!(
                     "Snapshot {}\nVersion: {}\nObjects: {}\nManifest SHA-256: {}\n{}",
@@ -975,8 +1085,105 @@ fn run(cli: Cli) -> Result<()> {
                     captured.manifest_sha256,
                     captured.directory.display()
                 );
-                println!("Partial native bundle; restore compatibility is unverified.");
+                println!(
+                    "Native bundle: {}. Native materialization requires separate target certification.",
+                    native["status"].as_str().unwrap_or("ArchiveOnly")
+                );
             }
+        }
+        Command::Compatibility {
+            id,
+            target_version,
+            target_os,
+            target_arch,
+            project,
+        } => {
+            let selected = select_snapshot(&store, &id)?;
+            snapshot::verify(&selected)?;
+            let provider = env
+                .providers
+                .iter()
+                .find(|p| p.provider_id() == selected.manifest.provider)
+                .context("provider unavailable")?;
+            let platform = Platform {
+                os: target_os.unwrap_or_else(|| std::env::consts::OS.into()),
+                arch: target_arch.unwrap_or_else(|| std::env::consts::ARCH.into()),
+            };
+            let version = ProviderVersion(target_version);
+            let compatibility = provider.compatibility(&selected, &version, &platform)?;
+            let mut output = serde_json::json!({"snapshot_id":selected.manifest.snapshot_id,"session_id":selected.manifest.session_id,"native":native_assessment(provider.as_ref(), &selected),"result":compatibility,"target_version_source":"explicit planning input; not executable attestation"});
+            if let Some(project) = project {
+                let workspace = absolute(project)?
+                    .canonicalize()
+                    .context("target workspace unavailable")?;
+                let git = agentsync_core::git::inspect(&workspace, &store.device()?.id)?;
+                output["plan"] = serde_json::to_value(
+                    provider
+                        .plan_materialization(&selected, &version, &platform, &workspace, &git)?,
+                )?;
+            }
+            if cli.json {
+                print_json(&output)?;
+            } else {
+                println!(
+                    "Snapshot {}\nNative bundle: {}\nTarget compatibility: {:?}\nMaterialization: {}\nNative resume verified: {}",
+                    selected.manifest.snapshot_id,
+                    output["native"]["status"].as_str().unwrap_or("ArchiveOnly"),
+                    compatibility.status,
+                    compatibility.compatibility.materialization_supported,
+                    compatibility.compatibility.resume_verified
+                );
+                for reason in &compatibility.reasons {
+                    println!("{reason}");
+                }
+                if let Some(warnings) = output["plan"]["repository"]["warnings"].as_array() {
+                    for warning in warnings {
+                        println!(
+                            "{}",
+                            warning.as_str().unwrap_or("repository inspection warning")
+                        );
+                    }
+                }
+                println!(
+                    "Target version is a planning input. No provider executable was launched."
+                );
+            }
+        }
+        Command::Materialize {
+            id,
+            project,
+            target_version,
+        } => {
+            let selected = select_snapshot(&store, &id)?;
+            snapshot::verify(&selected)?;
+            let provider = env
+                .providers
+                .iter()
+                .find(|p| p.provider_id() == selected.manifest.provider)
+                .context("provider unavailable")?;
+            let compatibility = provider.compatibility(
+                &selected,
+                &ProviderVersion(target_version.clone()),
+                &Platform::current(),
+            )?;
+            if compatibility.status != ResumabilityStatus::Certified {
+                bail!(
+                    "native materialization blocked ({:?}): no certified tuple or live-home rollback guarantee; no provider state changed. Run compatibility with --project to inspect repository mapping; see docs/codex-continuity-acceptance.md",
+                    compatibility.status
+                );
+            }
+            let workspace = absolute(project)?
+                .canonicalize()
+                .context("target workspace unavailable")?;
+            let git = agentsync_core::git::inspect(&workspace, &store.device()?.id)?;
+            let plan = provider.plan_materialization(
+                &selected,
+                &ProviderVersion(target_version),
+                &Platform::current(),
+                &workspace,
+                &git,
+            )?;
+            print_json(&provider.materialize(&selected, &plan)?)?;
         }
         Command::Snapshots {
             session_id: value,

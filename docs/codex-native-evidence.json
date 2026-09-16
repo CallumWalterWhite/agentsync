@@ -1,0 +1,819 @@
+{
+  "format_version": 1,
+  "recorded_at_utc": "2026-09-16T15:55:00Z",
+  "model_backend": "deterministic loopback synthetic Responses SSE",
+  "certification": "NOT cross-platform or live-model certification",
+  "version": "codex-cli 0.154.0",
+  "os": "Linux",
+  "architecture": "x86_64",
+  "root": "/tmp/agentsync-codex-native-gidl4or_",
+  "source_home": "/tmp/agentsync-codex-native-gidl4or_/source-codex",
+  "target_home": "/tmp/agentsync-codex-native-gidl4or_/target-codex",
+  "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+  "source_workspace": "/tmp/agentsync-codex-native-gidl4or_/source-repo",
+  "target_workspace": "/tmp/agentsync-codex-native-gidl4or_/target-repo",
+  "git": {
+    "identity": "example.invalid/agentsync/continuity",
+    "branch": "continuity-test",
+    "head": "c29e539797fea26798018b50d5dcb0d3a89e4a75"
+  },
+  "transferred_files": {
+    "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl": {
+      "size": 42978,
+      "sha256": "603540cb9124ba33fb9102af0be2703658188fbd2ca45a69f57f6cc02d27aae0"
+    }
+  },
+  "rollout_append_preserved_prefix": true,
+  "latest_context_cwd": "/tmp/agentsync-codex-native-gidl4or_/target-repo",
+  "steps": [
+    {
+      "name": "source-first-turn",
+      "exit_code": 0,
+      "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+      "event_types": [
+        "thread.started",
+        "item.completed",
+        "turn.started",
+        "item.started",
+        "item.completed",
+        "item.completed",
+        "turn.completed"
+      ],
+      "completed": true,
+      "tool_completed": true,
+      "requests": [
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": false,
+          "has_prior_assistant": false,
+          "has_tool_result": false,
+          "input_count": 3,
+          "request_sha256": "20e29baaffef4280dde035cb814d90ad42be251ea2f4d54f9b653d9d75edad2c"
+        },
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": false,
+          "has_prior_assistant": false,
+          "has_tool_result": true,
+          "input_count": 5,
+          "request_sha256": "9e9d4dfeea95ac39bd6179f02342ede4cf1182d748d24c8cc33c4bac4587bf2f"
+        }
+      ],
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-Zctjoc/HEAD",
+          ".tmp/plugins.sync.lock",
+          "goals_1.sqlite",
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "installation_id",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread-writer-locks/.coordination.lock",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "created_bundled_skill_files": 60,
+        "modified_files": [],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "goals_1.sqlite": {},
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "memories_1.sqlite": {},
+          "queue_1.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 3,
+              "added_row_hashes": 3,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "source-second-turn",
+      "exit_code": 0,
+      "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+      "event_types": [
+        "thread.started",
+        "item.completed",
+        "turn.started",
+        "item.completed",
+        "turn.completed"
+      ],
+      "completed": true,
+      "tool_completed": false,
+      "requests": [
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": true,
+          "has_prior_assistant": true,
+          "has_tool_result": true,
+          "input_count": 7,
+          "request_sha256": "5b0628559edd8a6cca8feba21f7ffe9b83b51894cfc34ee8e9b25221858c8dc9"
+        }
+      ],
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-QvkdVA/HEAD"
+        ],
+        "created_bundled_skill_files": 0,
+        "modified_files": [
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 2,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 5,
+              "added_row_hashes": 2,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "rollout-only-discovery",
+      "discovered": true,
+      "discovered_cwd": "/tmp/agentsync-codex-native-gidl4or_/source-repo",
+      "read_ok": true,
+      "read_error_code": null,
+      "turn_count": 0,
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-KHmZjk/HEAD",
+          ".tmp/plugins.sync.lock",
+          "goals_1.sqlite",
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "installation_id",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "created_bundled_skill_files": 60,
+        "modified_files": [],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "goals_1.sqlite": {},
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "memories_1.sqlite": {},
+          "queue_1.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {}
+        }
+      }
+    },
+    {
+      "name": "rollback-before-injected-failure",
+      "discovered": true,
+      "discovered_cwd": "/tmp/agentsync-codex-native-gidl4or_/source-repo",
+      "read_ok": true,
+      "read_error_code": null,
+      "turn_count": 0,
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-ywSBAB/HEAD",
+          ".tmp/plugins.sync.lock",
+          "goals_1.sqlite",
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "installation_id",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "created_bundled_skill_files": 60,
+        "modified_files": [],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "goals_1.sqlite": {},
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "memories_1.sqlite": {},
+          "queue_1.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {}
+        }
+      }
+    },
+    {
+      "name": "private-home-injected-verification-failure",
+      "rollback_strategy": "discard entire freshly owned disposable target home",
+      "rollback_restored_absence": true,
+      "filesystem": {
+        "created_files": [],
+        "created_bundled_skill_files": 0,
+        "modified_files": [],
+        "removed_files": [
+          ".tmp/git-ywSBAB/HEAD",
+          ".tmp/plugins.sync.lock",
+          "goals_1.sqlite",
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "installation_id",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_bundled_skill_files": 60,
+        "sqlite_tables": {}
+      }
+    },
+    {
+      "name": "rollout-only-direct-resume",
+      "exit_code": 0,
+      "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+      "event_types": [
+        "thread.started",
+        "item.completed",
+        "turn.started",
+        "item.completed",
+        "turn.completed"
+      ],
+      "completed": true,
+      "tool_completed": false,
+      "requests": [
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": true,
+          "has_prior_assistant": true,
+          "has_tool_result": true,
+          "input_count": 11,
+          "request_sha256": "6e39b5c388892b1ed2463c896dc8843d6d71c4f03d42c0fb2ccce28830d1f0c0"
+        }
+      ],
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-t2sJT2/HEAD",
+          ".tmp/plugins.sync.lock",
+          "goals_1.sqlite",
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "installation_id",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread-writer-locks/.coordination.lock",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "created_bundled_skill_files": 60,
+        "modified_files": [
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "goals_1.sqlite": {},
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "memories_1.sqlite": {},
+          "queue_1.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 3,
+              "added_row_hashes": 3,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 7,
+              "added_row_hashes": 7,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "native-cwd-remap",
+      "discovered": true,
+      "discovered_cwd": "/tmp/agentsync-codex-native-gidl4or_/source-repo",
+      "read_ok": true,
+      "read_error_code": null,
+      "turn_count": 0,
+      "resume_ok": true,
+      "resume_cwd": "/tmp/agentsync-codex-native-gidl4or_/target-repo",
+      "resume_thread_cwd": "/tmp/agentsync-codex-native-gidl4or_/source-repo",
+      "filesystem": {
+        "created_files": [
+          ".sandbox_migration",
+          ".tmp/git-943TGj/HEAD",
+          "thread-writer-locks/.coordination.lock"
+        ],
+        "created_bundled_skill_files": 0,
+        "modified_files": [
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 2,
+              "added_row_hashes": 2,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 5,
+              "added_row_hashes": 5,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "target-continued-turn",
+      "exit_code": 0,
+      "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+      "event_types": [
+        "thread.started",
+        "item.completed",
+        "turn.started",
+        "item.completed",
+        "turn.completed"
+      ],
+      "completed": true,
+      "tool_completed": false,
+      "requests": [
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": true,
+          "has_prior_assistant": true,
+          "has_tool_result": true,
+          "input_count": 11,
+          "request_sha256": "1de05ad02082c1f133b93873b3639b494c1f3d01187d6d583385aa924f248a13"
+        }
+      ],
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-TN0XsH/HEAD"
+        ],
+        "created_bundled_skill_files": 0,
+        "modified_files": [
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 3,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 7,
+              "added_row_hashes": 2,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "target-restart-discovery",
+      "discovered": true,
+      "discovered_cwd": "/tmp/agentsync-codex-native-gidl4or_/target-repo",
+      "read_ok": true,
+      "read_error_code": null,
+      "turn_count": 3,
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-G01ME3/HEAD"
+        ],
+        "created_bundled_skill_files": 0,
+        "modified_files": [
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "target-restart-turn",
+      "exit_code": 0,
+      "session_id": "01a0aaed-b119-7153-8044-7cfc80732983",
+      "event_types": [
+        "thread.started",
+        "item.completed",
+        "turn.started",
+        "item.completed",
+        "turn.completed"
+      ],
+      "completed": true,
+      "tool_completed": false,
+      "requests": [
+        {
+          "has_initial_prompt": true,
+          "has_second_prompt": true,
+          "has_prior_assistant": true,
+          "has_tool_result": true,
+          "input_count": 13,
+          "request_sha256": "2422b6d49024476fd5913c47f0ed0bc60e7603b2f8c2ab39a5f73589836d68f6"
+        }
+      ],
+      "filesystem": {
+        "created_files": [
+          ".tmp/git-kQow1R/HEAD"
+        ],
+        "created_bundled_skill_files": 0,
+        "modified_files": [
+          "goals_1.sqlite-shm",
+          "goals_1.sqlite-wal",
+          "logs_2.sqlite",
+          "logs_2.sqlite-shm",
+          "logs_2.sqlite-wal",
+          "memories_1.sqlite-shm",
+          "memories_1.sqlite-wal",
+          "queue_1.sqlite-shm",
+          "queue_1.sqlite-wal",
+          "sessions/2026/09/16/rollout-2026-09-16T16-54-59-01a0aaed-b119-7153-8044-7cfc80732983.jsonl",
+          "state_5.sqlite",
+          "state_5.sqlite-shm",
+          "state_5.sqlite-wal",
+          "thread_history_1.sqlite",
+          "thread_history_1.sqlite-shm",
+          "thread_history_1.sqlite-wal"
+        ],
+        "removed_files": [],
+        "removed_bundled_skill_files": 0,
+        "sqlite_tables": {
+          "logs_2.sqlite": {
+            "sqlite_sequence": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "state_5.sqlite": {
+            "threads": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            },
+            "backfill_state": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            },
+            "thread_sections": {
+              "count": 1,
+              "added_row_hashes": 0,
+              "removed_row_hashes": 0
+            }
+          },
+          "thread_history_1.sqlite": {
+            "thread_turns": {
+              "count": 4,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 0
+            },
+            "thread_items": {
+              "count": 9,
+              "added_row_hashes": 2,
+              "removed_row_hashes": 0
+            },
+            "thread_history_projection_state": {
+              "count": 1,
+              "added_row_hashes": 1,
+              "removed_row_hashes": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

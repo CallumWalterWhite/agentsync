@@ -84,7 +84,7 @@ fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
 /// Neutral field checks shared by transfer and imported-snapshot registration.
 pub(crate) fn validate_metadata(item: &Snapshot) -> Result<()> {
     let manifest = &item.manifest;
-    if manifest.format_version != 1
+    if !manifest.supported_format()
         || !valid_hash(&item.manifest_sha256)
         || !valid_id(&manifest.snapshot_id.0, "snp_")
         || !valid_id(&manifest.session_id.0, "ags_")
@@ -459,13 +459,21 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_manifest_format(1)
+        }
+
+        fn with_manifest_format(format_version: u32) -> Self {
             let temporary = tempfile::tempdir().unwrap();
             let root = temporary.path().canonicalize().unwrap();
             let directory = root.join("original");
             fs::create_dir_all(directory.join("objects")).unwrap();
             let bytes = b"{\"message\":\"synthetic session\"}\n";
             let manifest = SnapshotManifest {
-                format_version: 1,
+                format_version,
+                source_platform: (format_version == 2).then_some(Platform {
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                }),
                 snapshot_id: SnapshotId::new(),
                 session_id: SessionId::new(),
                 version_id: SessionVersionId::new(),
@@ -580,6 +588,72 @@ mod tests {
         assert_eq!(reexported.manifest_sha256, fixture.original.manifest_sha256);
         assert!(export(&fixture.original, &exported.directory).is_err());
         verify(&exported).unwrap();
+    }
+
+    #[test]
+    fn both_manifest_formats_preserve_bytes_hashes_and_source_platform_across_transfer() {
+        for format in [1, 2] {
+            let fixture = Fixture::with_manifest_format(format);
+            let original_bytes =
+                fs::read(fixture.original.directory.join("manifest.json")).unwrap();
+            let raw: Value = serde_json::from_slice(&original_bytes).unwrap();
+            assert_eq!(raw.get("source_platform").is_some(), format == 2);
+            let exported = fixture.exported();
+            let mut store = fixture.store();
+            let imported =
+                import(&mut store, &exported.directory, &exported.manifest_sha256).unwrap();
+            let archive = export_archive(&imported.snapshot).unwrap();
+            let mut receiver = Store::open(&fixture.root.join("receiver")).unwrap();
+            let received = import_archive(&mut receiver, &archive).unwrap();
+            verify(&received.snapshot).unwrap();
+            assert_eq!(received.snapshot.manifest.format_version, format);
+            assert_eq!(
+                received.snapshot.manifest.source_platform,
+                fixture.original.manifest.source_platform
+            );
+            assert_eq!(
+                received.snapshot.manifest_sha256,
+                fixture.original.manifest_sha256
+            );
+            assert_eq!(
+                fs::read(received.snapshot.directory.join("manifest.json")).unwrap(),
+                original_bytes
+            );
+            drop(receiver);
+            let reopened = Store::open(&fixture.root.join("receiver")).unwrap();
+            let registered = reopened.imported_snapshots().unwrap().remove(0);
+            assert_eq!(
+                registered.snapshot.manifest.source_platform,
+                fixture.original.manifest.source_platform
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_version_inconsistent_platform_is_rejected_before_publication() {
+        let edits: Vec<fn(&mut Value)> = vec![
+            |value| value["format_version"] = 99.into(),
+            |value| {
+                value.as_object_mut().unwrap().remove("source_platform");
+            },
+            |value| value["source_platform"] = Value::Null,
+            |value| value["format_version"] = 1.into(),
+            |value| value["source_platform"]["os"] = "".into(),
+            |value| value["source_platform"]["arch"] = "../do-not-echo".into(),
+            |value| value["source_platform"]["os"] = "line\nbreak".into(),
+            |value| value["source_platform"]["unexpected"] = "do-not-echo".into(),
+        ];
+        for edit in edits {
+            let fixture = Fixture::with_manifest_format(2);
+            let exported = fixture.exported();
+            let digest = rewrite_manifest(&exported, edit);
+            let mut store = fixture.store();
+            let error = import(&mut store, &exported.directory, &digest)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("do-not-echo"));
+            Fixture::assert_empty(&store);
+        }
     }
 
     #[test]

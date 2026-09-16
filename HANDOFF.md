@@ -1,6 +1,6 @@
 # AgentSync handoff
 
-Updated 2026-09-15.
+Updated 2026-09-15. **2026-09-16 note:** the product direction was realigned since this was written — AgentSync's target is native cross-device session continuity, not permanent backup-only. See [ADR 0010](docs/ADR/0010-native-session-materialization.md) and [STATUS.md](STATUS.md) for the current, authoritative framing; this file's historical content below is otherwise still accurate for the milestone it describes.
 
 See [STATUS.md](STATUS.md) for the completed acceptance checklist and remaining work. Local snapshot exchange, limited forced capture and manual encrypted relay transfer are complete: the final 89-test suite passes on macOS with both Rust 1.98.1 and Rust 1.85.0. No planned code edit remains in this milestone.
 

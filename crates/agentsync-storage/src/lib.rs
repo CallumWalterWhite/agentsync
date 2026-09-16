@@ -389,7 +389,7 @@ impl Store {
         let session = self
             .session(&manifest.session_id)?
             .ok_or_else(|| StorageError::Invalid("snapshot session does not exist".into()))?;
-        if manifest.format_version != 1
+        if !manifest.supported_format()
             || manifest.objects.is_empty()
             || manifest.objects.len() > 128
             || manifest.device_id != session.device_id
@@ -518,7 +518,7 @@ impl Store {
     ) -> Result<ImportedSnapshot> {
         bundle::validate_metadata(&snapshot)?;
         let manifest = &snapshot.manifest;
-        if manifest.format_version != 1
+        if !manifest.supported_format()
             || !valid_id(&manifest.snapshot_id.0, "snp_")
             || !valid_id(&manifest.session_id.0, "ags_")
             || !valid_id(&manifest.version_id.0, "ver_")
@@ -1045,6 +1045,7 @@ mod tests {
         let session = store.sessions().unwrap().pop().unwrap();
         let manifest = SnapshotManifest {
             format_version: 1,
+            source_platform: None,
             snapshot_id: SnapshotId::new(),
             session_id: session.id.clone(),
             version_id: SessionVersionId::new(),

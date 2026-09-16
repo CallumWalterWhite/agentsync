@@ -227,7 +227,8 @@ pub fn capture_with_policy(
         );
     }
     let manifest = SnapshotManifest {
-        format_version: 1,
+        format_version: 2,
+        source_platform: Some(Platform::current()),
         snapshot_id: SnapshotId::new(),
         session_id: session.id.clone(),
         version_id: SessionVersionId::new(),
@@ -274,7 +275,7 @@ pub fn verify(snapshot: &Snapshot) -> Result<()> {
         return Err(invalid("manifest hash mismatch"));
     }
     let manifest: SnapshotManifest = serde_json::from_slice(&bytes)?;
-    if manifest.format_version != 1
+    if !manifest.supported_format()
         || serde_json::to_value(&manifest)? != serde_json::to_value(&snapshot.manifest)?
     {
         return Err(invalid(
@@ -384,6 +385,8 @@ mod tests {
         let mut fixture = Fixture::new(original);
         let source_stamp = FileStamp::of(&File::open(&fixture.source).unwrap()).unwrap();
         let first = fixture.capture();
+        assert_eq!(first.manifest.format_version, 2);
+        assert_eq!(first.manifest.source_platform, Some(Platform::current()));
         let first_manifest = fs::read(first.directory.join("manifest.json")).unwrap();
         let first_object = first.directory.join("objects").join(hash(original));
         verify(&first).unwrap();

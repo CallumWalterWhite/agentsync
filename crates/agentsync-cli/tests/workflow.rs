@@ -209,6 +209,82 @@ fn doctor_fails_when_registered_snapshot_is_corrupt() {
 }
 
 #[test]
+fn native_candidate_survives_transfer_and_materialization_fails_without_target_writes() {
+    let source = Fixture::new();
+    let files = source.providers();
+    let codex = &files[1].0;
+    let original = fs::read_to_string(codex).unwrap();
+    let mut lines: Vec<Value> = original
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    lines[0]["payload"]["source"] = "exec".into();
+    lines.push(serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic reply"}]}}));
+    lines.push(serde_json::json!({"type":"event_msg","payload":{"type":"task_complete"}}));
+    let bytes = lines.iter().map(|v| format!("{v}\n")).collect::<String>();
+    fs::write(codex, &bytes).unwrap();
+    source.json(&["discover"]);
+    let sessions = source.json(&["sessions", "--provider", "codex"]);
+    let session = sessions[0]["id"].as_str().unwrap();
+    let captured = source.json(&["snapshot", session]);
+    let snapshot_id = captured["manifest"]["snapshot_id"].as_str().unwrap();
+    assert_eq!(captured["manifest"]["format_version"], 2);
+    assert_eq!(captured["native"]["status"], "Candidate");
+    let export = source.root.join("native-export");
+    source.json(&["bundle", "export", snapshot_id, export.to_str().unwrap()]);
+
+    let target = Fixture::new();
+    target.json(&[
+        "bundle",
+        "import",
+        export.to_str().unwrap(),
+        "--manifest-sha256",
+        captured["manifest_sha256"].as_str().unwrap(),
+    ]);
+    let received = target.json(&["sessions", "--imported"]);
+    assert_eq!(received[0]["snapshot"]["manifest"]["session_id"], session);
+    assert_eq!(target.json(&["sessions"]), serde_json::json!([]));
+    let compatibility = target.json(&[
+        "compatibility",
+        session,
+        "--target-version",
+        "0.154.0",
+        "--target-os",
+        "linux",
+        "--target-arch",
+        "x86_64",
+    ]);
+    assert_eq!(compatibility["native"]["status"], "Candidate");
+    assert_eq!(
+        compatibility["result"]["compatibility"]["materialization_supported"],
+        false
+    );
+    assert_eq!(
+        compatibility["result"]["compatibility"]["resume_verified"],
+        false
+    );
+    let unknown = target.json(&["compatibility", snapshot_id, "--target-version", "0.160.0"]);
+    assert_eq!(unknown["result"]["status"], "Unsupported");
+    let blocked = target
+        .command()
+        .args([
+            "materialize",
+            snapshot_id,
+            "--project",
+            target.root.to_str().unwrap(),
+            "--target-version",
+            "0.154.0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("no provider state changed"));
+    assert!(!target.root.join("codex").exists());
+    assert!(!target.root.join("claude").exists());
+    assert_eq!(fs::read_to_string(codex).unwrap(), bytes);
+}
+
+#[test]
 fn storage_overlap_is_rejected_before_provider_writes() {
     let fixture = Fixture::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_agentsync"));
@@ -857,7 +933,9 @@ fn joining_a_pairing_with_the_wrong_code_fails_without_saving_a_token() {
         .trim_start_matches("Pairing code: ")
         .trim()
         .to_owned();
-    let wrong_code = format!("{}0", &real_code[..real_code.len() - 1]);
+    let last = real_code.chars().last().unwrap();
+    let flipped = if last == '0' { '1' } else { '0' };
+    let wrong_code = format!("{}{flipped}", &real_code[..real_code.len() - 1]);
     assert_ne!(wrong_code, real_code);
 
     let output = device_b

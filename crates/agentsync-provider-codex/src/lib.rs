@@ -1,4 +1,5 @@
 //! Read-only adapter for observed Codex native rollout artifacts.
+pub mod native;
 use agentsync_provider_api::{safe_fs, *};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
@@ -530,6 +531,33 @@ impl CodexProvider {
 impl AgentProvider for CodexProvider {
     fn provider_id(&self) -> ProviderId {
         ProviderId("codex".into())
+    }
+
+    fn build_native_bundle(&self, snapshot: &Snapshot) -> Result<NativeSessionBundle> {
+        native::build_bundle(snapshot)
+    }
+    fn validate_bundle(&self, snapshot: &Snapshot, bundle: &NativeSessionBundle) -> Result<()> {
+        native::validate_bundle(snapshot, bundle)
+    }
+
+    fn compatibility(
+        &self,
+        snapshot: &Snapshot,
+        version: &ProviderVersion,
+        platform: &Platform,
+    ) -> Result<CompatibilityResult> {
+        native::compatibility(snapshot, version, platform)
+    }
+
+    fn plan_materialization(
+        &self,
+        snapshot: &Snapshot,
+        version: &ProviderVersion,
+        platform: &Platform,
+        workspace: &Path,
+        git: &GitState,
+    ) -> Result<MaterializationPlan> {
+        native::plan(snapshot, version, platform, workspace, git)
     }
 
     fn detect(&self) -> Result<ProviderInstallation> {

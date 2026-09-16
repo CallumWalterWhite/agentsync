@@ -1,5 +1,7 @@
 //! Provider-neutral metadata and contracts. No provider filesystem knowledge.
 pub mod git;
+pub mod native;
+pub use native::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -208,6 +210,9 @@ pub struct ManifestGit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotManifest {
     pub format_version: u32,
+    /// Capture-machine provenance. Legacy format 1 has no platform evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_platform: Option<Platform>,
     pub snapshot_id: SnapshotId,
     pub session_id: SessionId,
     pub version_id: SessionVersionId,
@@ -219,6 +224,15 @@ pub struct SnapshotManifest {
     pub git: Option<ManifestGit>,
     pub objects: Vec<SnapshotObject>,
     pub limitations: Vec<String>,
+}
+impl SnapshotManifest {
+    pub fn supported_format(&self) -> bool {
+        match (self.format_version, &self.source_platform) {
+            (1, None) => true,
+            (2, Some(platform)) => platform.valid(),
+            _ => false,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionVersion {

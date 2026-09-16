@@ -1,8 +1,10 @@
 # AgentSync
 
-AgentSync discovers local Claude Code and Codex sessions, stores provider-neutral metadata, and captures immutable local snapshots of supported native transcripts. Local bundle export/import prepares verified copies for manual transfer between machines. It does not restore a session into Claude or Codex. Manual encrypted push/pull through a private relay is available; accounts and background synchronization remain future work.
+AgentSync's goal is a provider-neutral continuity layer for AI coding-agent sessions: letting a developer securely synchronize and, eventually, resume a native Claude Code or Codex session on another machine without the original machine needing to stay online. See [ADR 0010](docs/ADR/0010-native-session-materialization.md) for the target architecture and how it builds on what exists today.
 
-See [project status and remaining work](STATUS.md) for completed milestones, known gaps, and the proposed next steps.
+**Currently implemented:** AgentSync discovers local Claude Code and Codex sessions, stores provider-neutral metadata, and captures immutable local snapshots of supported native transcripts. Local bundle export/import and an encrypted relay (with device pairing) move verified snapshot copies between machines. Phase 2 now adds native bundle assessment, exact version/platform compatibility checks, and repository preflight. A narrow Codex 0.154.0 root conversation can be a **Candidate**; no production tuple is Certified and native writes remain blocked. Native materialization is being introduced incrementally and will only ever be enabled for explicitly certified provider/version combinations — see [ADR 0010](docs/ADR/0010-native-session-materialization.md).
+
+See [project status and remaining work](STATUS.md) for completed milestones, the phase roadmap toward native resume, known gaps, and proposed next steps.
 
 Provider files are user data. AgentSync reads only allowlisted session artifacts and never modifies provider storage or copies provider credentials and configuration. Snapshots are **partial native bundles**, not verified resumable exports. Native transcript content can contain secrets: recognized sensitive patterns cause capture to fail, but unknown secrets cannot be ruled out. Treat snapshots as private data.
 
@@ -36,7 +38,11 @@ cargo install --path crates/agentsync-cli
 | `agentsync sessions` or `agentsync sessions list` | List stored sessions. |
 | `agentsync sessions show ags_<uuid>` | Show one stored session's metadata. |
 | `agentsync snapshot ags_<uuid>` | Revalidate a discovered source and publish a new local snapshot version. |
-| `agentsync push snp_<uuid> --server <origin> --recipient <age1...>` | Encrypt and upload a verified snapshot to a private relay. |
+| `agentsync identity show` | Print this device's public age recipient, generating one on first use. Never prints the secret. |
+| `agentsync identity save-token --token <64-hex>` | Persist a relay token for this device (see [ADR 0009](docs/ADR/0009-device-pairing-and-mailbox-relay.md)). |
+| `agentsync pair --server <origin> --create [--label NAME]` | Create a one-time pairing code and wait for another device to join, exchanging identities and the relay token. |
+| `agentsync pair --server <origin> --join <code> [--label NAME]` | Join a pairing created on another device using its code. |
+| `agentsync push snp_<uuid> --server <origin> (--recipient <age1...> \| --peer NAME)` | Encrypt and upload a verified snapshot to a private relay, addressing either a raw recipient or a paired peer. |
 | `agentsync pull <transfer-sha256> --server <origin>` | Download, decrypt and import a sender-pinned transfer. |
 | `agentsync snapshot ags_<uuid> --force` | Allow keyword-reference false positives; credential-like markers remain blocked. |
 | `agentsync snapshots ags_<uuid>` | List registered versions without checking hashes. |
@@ -75,6 +81,21 @@ Sensitive-content refusals report either `sensitive_credential_marker` or `sensi
 
 `HOME` must be set even when roots are overridden. Explicit provider roots also disable that provider's PATH detection. Storage must not overlap configured or default provider roots. Symlinked paths and parent traversal are intentionally unsupported; use actual absolute paths. Unsafe or recognized sensitive metadata in configured/source paths is rejected before persistence. All commands open AgentSync storage and may initialize it. `doctor` also creates and removes a small write probe in AgentSync storage; it never repairs or deletes snapshot artifacts.
 
+## Native continuity assessment
+
+```sh
+agentsync sessions --imported
+agentsync compatibility <snapshot-id-or-session-id> --target-version 0.154.0
+agentsync compatibility <snapshot-id-or-session-id> --target-version 0.154.0 \
+  --target-os macos --target-arch aarch64 --project /absolute/target/repository
+agentsync materialize <snapshot-id-or-session-id> --target-version 0.154.0 \
+  --project /absolute/target/repository
+```
+
+`compatibility` verifies immutable bytes, constructs an adapter-approved candidate when possible, and evaluates an exact tuple. `--target-version` is explicit planning input, not installed-binary attestation. `--project` checks repository identity and reports branch/HEAD mismatches and unknown dirty state without changing Git. Session IDs resolve the latest unambiguous local or received snapshot; snapshot IDs select exact content.
+
+**`materialize` currently fails before provider writes for every tuple.** No `--force` bypass exists. Native listing itself repairs databases; complete rollback in an existing home has not been proven. The [repeatable probe](docs/codex-native-evidence.md) uses disposable homes, native Codex, real tool execution, and synthetic model responses. It proves Linux mechanics, not macOS or live-model certification. The new bundle model travels through the existing snapshot transport: the receiver reconstructs it from verified immutable artifacts and capture provenance, never trusts a transferred certification flag.
+
 ## Move a verified copy between machines
 
 First capture a session and take its `snp_` snapshot ID from the result. Export selects either a local snapshot or an earlier import. Its destination must be a new directory with an existing parent, outside AgentSync storage and provider roots. Export prints its directory and manifest SHA-256.
@@ -105,7 +126,7 @@ session-bundle/
   objects/<sha256>
 ```
 
-`manifest.json` remains the original format-1 manifest. The format-1 `bundle.json` receipt carries its hash and original version record. Import validates all native bytes before publishing private AgentSync-owned files. Symlinks, hardlinks, traversal, unexpected entries, recognized sensitive native content, and unsafe decoded metadata are rejected. Bounds are 4 MiB for the manifest, 128 MiB per object, and 256 MiB of objects per bundle.
+`manifest.json` preserves its original bytes: legacy format 1 or new format 2 with capture-platform provenance. The format-1 `bundle.json` receipt carries its hash and original version record. Import validates all native bytes before publishing private AgentSync-owned files. Symlinks, hardlinks, traversal, unexpected entries, recognized sensitive native content, and unsafe decoded metadata are rejected. Bounds are 4 MiB for the manifest, 128 MiB per object, and 256 MiB of objects per bundle.
 
 Import preserves the foreign session/device/snapshot IDs in a separate catalog. It does not create a local provider session, map a destination project, or enable native continuation. Reimporting the same ID and content is idempotent; conflicting content or an already corrupt destination fails instead of being replaced. `doctor` verifies imports and reports retained orphan import publications.
 
@@ -129,14 +150,14 @@ The default storage is:
     objects/<sha256>
 ```
 
-`config` and `logs` are reserved AgentSync-owned directories; they do not contain copied provider settings. SQLite contains metadata, local paths, project mappings, discovery diagnostics, and snapshot registrations. Manifest format 1 contains relative logical object names, hashes, sizes, provider identity/version, and selected Git metadata. It omits absolute source and repository paths, but native object bytes can still contain them. Files are private and read-only after capture on Unix; this is not encryption or protection from deliberate owner modification. Hash verification detects changes against the registered metadata, not malicious replacement of the entire store.
+`config` and `logs` are reserved AgentSync-owned directories; they do not contain copied provider settings. SQLite contains metadata, local paths, project mappings, discovery diagnostics, and snapshot registrations. Manifest formats 1 and 2 contain relative logical object names, hashes, sizes, provider identity/version, and selected Git metadata. New captures use format 2 and record the capturing process OS/architecture; legacy manifests remain unchanged. See the [numbered format migration](docs/migrations/0001-snapshot-manifest-v2.md). It omits absolute source and repository paths, but native object bytes can still contain them. Files are private and read-only after capture on Unix; this is not encryption or protection from deliberate owner modification. Hash verification detects changes against the registered metadata, not malicious replacement of the entire store.
 
 Supported capture compatibility is deliberately narrow:
 
 - [Claude Code](docs/provider-claude.md): primary UUID transcripts, versions 2.1.234–2.1.269. Subagents, tool-result files, memory, and other ancillary state are excluded.
 - [Codex](docs/provider-codex.md): dated rollout JSONL, versions 0.153.2 and 0.154.0. Archived sessions, indexes, databases, and related sessions are excluded.
 
-Unknown versions remain discoverable where identity is valid, but cannot be snapshotted. Malformed artifacts produce isolated diagnostics or incomplete sessions. A `Discovered` status does not establish inactivity. Capture refuses incomplete/unknown sessions, recognized sensitive content, unsafe paths, and source changes detected during validation/copying. Default discovery bounds are 128 MiB per file, 4 MiB per line, and 100,000 files; capture is bounded to 128 MiB per object and 256 MiB per bundle.
+Codex archive capture accepts structurally valid nonempty version metadata; the observed fixture versions are 0.153.2 and 0.154.0. Native eligibility has a separate exact-version gate. Claude retains its capture version allowlist. Malformed artifacts produce isolated diagnostics or incomplete sessions. A `Discovered` status does not establish inactivity. Capture refuses incomplete/unknown sessions, recognized sensitive content, unsafe paths, and source changes detected during validation/copying. Default discovery bounds are 128 MiB per file, 4 MiB per line, and 100,000 files; capture is bounded to 128 MiB per object and 256 MiB per bundle.
 
 Git inspection records available repository identity, branch, and HEAD. Dirty state remains unknown because ordinary Git status can execute configured clean filters, which AgentSync must never run.
 
@@ -152,15 +173,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Read [architecture](docs/architecture.md), [domain model](docs/domain-model.md), [provider model](docs/provider-model.md), and the [architecture decisions](docs/ADR/0001-rust-workspace-architecture.md).
+Read [architecture](docs/architecture.md), [domain model](docs/domain-model.md), [provider model](docs/provider-model.md), and the [architecture decisions](docs/ADR/0001-rust-workspace-architecture.md), especially [ADR 0010](docs/ADR/0010-native-session-materialization.md) for the target direction.
 
 ## Further work
 
-Local snapshot exchange is a step toward two-machine use, not complete native session synchronization. Expand fixture-backed provider compatibility, Linux verification, and fault-injection coverage for interrupted publication. Define retained orphan handling and stronger privacy controls. Evaluate broader native bundles only with evidence of their dependencies and sensitivity. Any restore or provider write support requires a new ADR and a separately authorized milestone. The Phase 2 relay provides manual encrypted network transfer. Accounts and daemons remain future work.
+Local snapshot exchange and the encrypted relay are steps toward the actual target — native session continuity across machines, not an end in themselves. See [STATUS.md](STATUS.md) for the phase roadmap. Near-term: expand fixture-backed provider compatibility, Linux verification, and fault-injection coverage for interrupted publication; define retained orphan handling and stronger privacy controls. The [isolated native experiment](docs/codex-native-evidence.md) proves rollout-only continuation for Linux x86_64 Codex 0.154.0 with a synthetic model endpoint. Native materialization remains certification-blocked: shared-home rollback and real Linux-to-macOS continuation are unproven. Follow the [acceptance procedure](docs/codex-continuity-acceptance.md); proving that path is the next priority.
 
 ## Encrypted relay (Phase 2 basics)
 
-Manual encrypted push/pull is implemented with an Axum relay and private disk storage. See [machine-to-machine setup](docs/machine-sync.md) for installation, runtime secrets, recipient keys, HTTPS/tunnel setup and commands. This transfers snapshots into the imported catalog; native provider restore, automatic synchronization and hosted account management remain future work.
+Manual encrypted push/pull, plus device pairing, are implemented with an Axum relay and private disk storage. See [machine-to-machine setup](docs/machine-sync.md) for installation, runtime secrets, pairing, HTTPS/tunnel setup and commands. This transfers snapshots into the imported catalog. It does not by itself make anything resumable — native provider materialization is a separate, adapter-owned, currently-unimplemented capability (see [ADR 0010](docs/ADR/0010-native-session-materialization.md)). Automatic/background synchronization and hosted account management remain future work.
 
 ## Live Docker showcase
 

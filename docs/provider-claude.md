@@ -25,3 +25,17 @@ A snapshot is a partial native bundle containing the primary transcript; it is n
 Malformed JSON, truncated lines, oversized files and unsupported field types must remain per-session failures. Parsing errors are replaced with static diagnostics; transcript contents never enter logs or SQLite. The shared filesystem reader bounds file/line sizes and rejects symlink traversal. Source mutation during copying is rejected by the snapshot layer.
 
 Native transcripts can contain private prompts, tool output, source code and embedded secrets. Filename allowlisting cannot prove arbitrary payloads secret-free. AgentSync's snapshot layer rejects recognized sensitive patterns, including credential/environment references, and may therefore reject legitimate transcripts conservatively. Detection cannot establish the absence of arbitrary unknown secrets. Primary native bytes are retained only in private AgentSync-owned snapshot storage; no provider credential/configuration files are copied.
+
+## Resumability and native materialization (target)
+
+See [ADR 0010](ADR/0010-native-session-materialization.md) for the concepts referenced here.
+
+- **Current capture coverage:** the primary UUID transcript only (`sessions/<uuid>.jsonl`), versions 2.1.234–2.1.269.
+- **Current exclusions:** subagent transcripts (`<UUID>/subagents/agent-*.jsonl`), tool-result files (`<UUID>/tool-results/`), project memory, file history, root history, provider indexes/databases, session state, configuration, plugins, logs, shell snapshots, and session environment files.
+- **Known required state for resume:** not established. No investigation has yet been done against a real `claude --resume` (or equivalent) invocation to determine what it actually reads.
+- **Unknown state:** whether subagent transcripts or tool-result files are load-bearing for resume, or purely ancillary; whether project memory affects resumed behavior; whether provider indexes must be consistent with a placed transcript for Claude to discover it.
+- **Authentication exclusions:** OAuth/session state, credentials, and generic provider configuration are never opened, captured, or would ever be restored (`AGENTS.md`).
+- **Current resumability level:** `ArchiveOnly`. No certification work has started.
+- **Tested provider versions:** capture tested against synthetic fixtures at version 2.1.269; the accepted range 2.1.234–2.1.269 is derived from sampled real transcript versions, not from resume testing.
+- **Target materialization approach:** unspecified pending investigation. Any future `validate`/`materialize`/`verify` implementation stays entirely inside this adapter, per [ADR 0010](ADR/0010-native-session-materialization.md), and must be certified per exact version before being offered.
+- **Risks / open questions:** whether Claude Code maintains an index/database that must be kept consistent with a materialized transcript; whether a materialized session's working-directory/project association can be safely remapped to a different absolute path on a target machine; whether concurrent Claude processes on the target need to be detected before materialization.
